@@ -1,0 +1,22 @@
+# Requirements for LinkedIn Blog AI Assistant
+
+# Core dependencies
+langgraph
+langchain
+langchain-anthropic
+langchain-openai
+langchain-groq
+langchain-community
+
+# Google Gemini for image processing
+google-generativeai
+
+# Image processing
+Pillow
+
+# PDF processing
+pypdf
+
+# Additional utilities
+python-dotenv
+typing-extensions
