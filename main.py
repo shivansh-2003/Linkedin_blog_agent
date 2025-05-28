@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from pdf_text_pipeline import PDFTextPipeline
 from image_pipeline import ImagePipeline
 from code_pipeline import CodePipeline
+from presentation_pipeline import PresentationPipeline
 from blogger_agent import LinkedInBloggerAgent
 
 load_dotenv()
@@ -22,6 +23,7 @@ class LinkedInBlogAIAssistant:
         self.pdf_text_pipeline = PDFTextPipeline(api_key=openai_key)
         self.image_pipeline = ImagePipeline(api_key=google_key)
         self.code_pipeline = CodePipeline(api_key=anthropic_key)
+        self.presentation_pipeline = PresentationPipeline(api_key=openai_key, google_api_key=google_key)
         self.blogger_agent = LinkedInBloggerAgent(anthropic_api_key=anthropic_key)
         
         print("✅ LinkedIn Blog AI Assistant initialized!")
@@ -29,7 +31,8 @@ class LinkedInBlogAIAssistant:
         print("1. Text input or PDF files")
         print("2. Images (jpg, png, etc.)")
         print("3. Code files (py, js, go, etc.)")
-        print("4. Mixed inputs (combine multiple sources)\n")
+        print("4. Presentations (pptx, ppt, pdf)")
+        print("5. Mixed inputs (combine multiple sources)\n")
     
     def process_text_input(self, text: str) -> dict:
         """Process direct text input"""
@@ -51,6 +54,11 @@ class LinkedInBlogAIAssistant:
         print(f"💻 Processing code file: {code_path}")
         return self.code_pipeline.extract_from_code(code_path)
     
+    def process_presentation(self, presentation_path: str, analyze_images: bool = True) -> dict:
+        """Process presentation file"""
+        print(f"📊 Processing presentation: {presentation_path}")
+        return self.presentation_pipeline.extract_from_presentation(presentation_path, analyze_images)
+    
     def process_file(self, file_path: str) -> dict:
         """Process a single file based on its extension"""
         if not os.path.exists(file_path):
@@ -59,7 +67,15 @@ class LinkedInBlogAIAssistant:
         file_ext = Path(file_path).suffix.lower()
         
         if file_ext == '.pdf':
-            return self.process_pdf_file(file_path)
+            # Check if it's a presentation PDF or text PDF
+            print(f"📄 Detected PDF file. Processing as...")
+            choice = input("Is this a presentation PDF? (y/n, default=n): ").strip().lower()
+            if choice == 'y':
+                return self.process_presentation(file_path)
+            else:
+                return self.process_pdf_file(file_path)
+        elif file_ext in ['.pptx', '.ppt']:
+            return self.process_presentation(file_path)
         elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
             return self.process_image(file_path)
         elif self.code_pipeline.is_supported_format(file_path):
@@ -130,11 +146,12 @@ class LinkedInBlogAIAssistant:
         while True:
             print("\nChoose input method:")
             print("1. Text input")
-            print("2. Single file (PDF, image, code, or text)")
+            print("2. Single file (PDF, image, code, presentation, or text)")
             print("3. Multiple files")
-            print("4. Exit")
+            print("4. Presentation (with advanced options)")
+            print("5. Exit")
             
-            choice = input("\nEnter your choice (1-4): ").strip()
+            choice = input("\nEnter your choice (1-5): ").strip()
             
             extraction_result = None
             
@@ -166,12 +183,36 @@ class LinkedInBlogAIAssistant:
                 
                 if file_paths:
                     extraction_result = self.process_multiple_files(file_paths)
-                    
+            
             elif choice == "4":
+                file_path = input("\nEnter presentation file path: ").strip()
+                
+                # Advanced presentation options
+                print("\n📊 Presentation Processing Options:")
+                analyze_images = input("Analyze images with AI? (y/n, default=y): ").strip().lower() != 'n'
+                
+                # Check if user wants to extract specific slides
+                specific_slides = input("Extract specific slides only? Enter slide numbers (e.g., 1,3,5) or press Enter for all: ").strip()
+                
+                if specific_slides:
+                    try:
+                        slide_numbers = [int(x.strip()) for x in specific_slides.split(',')]
+                        extraction_result = {
+                            "source_type": "presentation_excerpt",
+                            "extracted_info": self.presentation_pipeline.extract_key_slides(file_path, slide_numbers)["extracted_info"],
+                            "status": "success"
+                        }
+                    except ValueError:
+                        print("❌ Invalid slide numbers format. Processing all slides instead.")
+                        extraction_result = self.process_presentation(file_path, analyze_images)
+                else:
+                    extraction_result = self.process_presentation(file_path, analyze_images)
+                    
+            elif choice == "5":
                 print("\n👋 Thank you for using LinkedIn Blog AI Assistant!")
                 break
             else:
-                print("❌ Invalid choice! Please enter 1-4.")
+                print("❌ Invalid choice! Please enter 1-5.")
                 continue
             
             # Generate blog if extraction was successful

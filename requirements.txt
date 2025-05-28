@@ -20,3 +20,11 @@ pypdf
 # Additional utilities
 python-dotenv
 typing-extensions
+python-pptx
+Pillow
+PyMuPDF
+pdf2image
+
+
+pandas 
+numpy
