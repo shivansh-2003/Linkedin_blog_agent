@@ -9,6 +9,9 @@ langchain-groq
 langchain-community
 langgraph
 
+# Google Generative AI (required for image_pipeline.py)
+google-generativeai
+
 # FastAPI web framework
 fastapi
 uvicorn[standard]
