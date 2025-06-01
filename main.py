@@ -28,11 +28,9 @@ class LinkedInBlogAIAssistant:
         
         print("✅ LinkedIn Blog AI Assistant initialized!")
         print("Available input methods:")
-        print("1. Text input or PDF files")
-        print("2. Images (jpg, png, etc.)")
-        print("3. Code files (py, js, go, etc.)")
-        print("4. Presentations (pptx, ppt, pdf)")
-        print("5. Mixed inputs (combine multiple sources)\n")
+        print("1. Text input")
+        print("2. File upload (PDF, image, code, presentation, or text)")
+        print()  # Empty line for spacing
     
     def process_text_input(self, text: str) -> dict:
         """Process direct text input"""
@@ -67,13 +65,8 @@ class LinkedInBlogAIAssistant:
         file_ext = Path(file_path).suffix.lower()
         
         if file_ext == '.pdf':
-            # Check if it's a presentation PDF or text PDF
-            print(f"📄 Detected PDF file. Processing as...")
-            choice = input("Is this a presentation PDF? (y/n, default=n): ").strip().lower()
-            if choice == 'y':
-                return self.process_presentation(file_path)
-            else:
-                return self.process_pdf_file(file_path)
+            # Process PDF as text document by default
+            return self.process_pdf_file(file_path)
         elif file_ext in ['.pptx', '.ppt']:
             return self.process_presentation(file_path)
         elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
@@ -84,36 +77,6 @@ class LinkedInBlogAIAssistant:
             return self.pdf_text_pipeline.extract_from_text_file(file_path)
         else:
             return {"status": "error", "error": f"Unsupported file type: {file_path}"}
-    
-    def process_multiple_files(self, file_paths: List[str]) -> dict:
-        """Process multiple files of different types"""
-        all_extractions = []
-        
-        for file_path in file_paths:
-            result = self.process_file(file_path)
-            
-            if result["status"] == "success":
-                all_extractions.append(result)
-            else:
-                print(f"⚠️ {result['error']}")
-        
-        # Combine all extractions
-        if all_extractions:
-            combined_info = "\n\n=== Combined Information ===\n\n"
-            for i, extraction in enumerate(all_extractions, 1):
-                combined_info += f"Source {i} ({extraction['source_type']}):\n"
-                combined_info += extraction["extracted_info"] + "\n\n"
-            
-            return {
-                "source_type": "multiple_sources",
-                "extracted_info": combined_info,
-                "status": "success"
-            }
-        else:
-            return {
-                "status": "error",
-                "error": "No valid files processed"
-            }
     
     def generate_blog(self, extraction_result: dict) -> str:
         """Generate LinkedIn blog post from extracted information"""
@@ -146,12 +109,10 @@ class LinkedInBlogAIAssistant:
         while True:
             print("\nChoose input method:")
             print("1. Text input")
-            print("2. Single file (PDF, image, code, presentation, or text)")
-            print("3. Multiple files")
-            print("4. Presentation (with advanced options)")
-            print("5. Exit")
+            print("2. File upload (PDF, image, code, presentation, or text)")
+            print("3. Exit")
             
-            choice = input("\nEnter your choice (1-5): ").strip()
+            choice = input("\nEnter your choice (1-3): ").strip()
             
             extraction_result = None
             
@@ -170,49 +131,12 @@ class LinkedInBlogAIAssistant:
             elif choice == "2":
                 file_path = input("\nEnter file path: ").strip()
                 extraction_result = self.process_file(file_path)
-                
-            elif choice == "3":
-                print("\nEnter file paths (one per line, type 'DONE' to finish):")
-                file_paths = []
-                while True:
-                    path = input().strip()
-                    if path == "DONE":
-                        break
-                    if path:
-                        file_paths.append(path)
-                
-                if file_paths:
-                    extraction_result = self.process_multiple_files(file_paths)
-            
-            elif choice == "4":
-                file_path = input("\nEnter presentation file path: ").strip()
-                
-                # Advanced presentation options
-                print("\n📊 Presentation Processing Options:")
-                analyze_images = input("Analyze images with AI? (y/n, default=y): ").strip().lower() != 'n'
-                
-                # Check if user wants to extract specific slides
-                specific_slides = input("Extract specific slides only? Enter slide numbers (e.g., 1,3,5) or press Enter for all: ").strip()
-                
-                if specific_slides:
-                    try:
-                        slide_numbers = [int(x.strip()) for x in specific_slides.split(',')]
-                        extraction_result = {
-                            "source_type": "presentation_excerpt",
-                            "extracted_info": self.presentation_pipeline.extract_key_slides(file_path, slide_numbers)["extracted_info"],
-                            "status": "success"
-                        }
-                    except ValueError:
-                        print("❌ Invalid slide numbers format. Processing all slides instead.")
-                        extraction_result = self.process_presentation(file_path, analyze_images)
-                else:
-                    extraction_result = self.process_presentation(file_path, analyze_images)
                     
-            elif choice == "5":
+            elif choice == "3":
                 print("\n👋 Thank you for using LinkedIn Blog AI Assistant!")
                 break
             else:
-                print("❌ Invalid choice! Please enter 1-5.")
+                print("❌ Invalid choice! Please enter 1-3.")
                 continue
             
             # Generate blog if extraction was successful

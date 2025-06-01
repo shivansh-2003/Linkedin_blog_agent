@@ -1,42 +1,42 @@
 # Requirements for LinkedIn Blog AI Assistant
 
 # Core LLM and framework dependencies
-langchain>=0.1.0
-langchain-openai>=0.0.5
-langchain-anthropic>=0.1.0
-langchain-google-genai>=0.0.6
+langchain
+langchain-openai
+langchain-anthropic
+langchain-google-genai
 langchain-groq
 langchain-community
-langgraph>=0.0.32
+langgraph
 
 # FastAPI web framework
-fastapi>=0.104.0
-uvicorn[standard]>=0.24.0
-python-multipart>=0.0.6
+fastapi
+uvicorn[standard]
+python-multipart
 
 # Image processing and computer vision
-Pillow>=9.0.0
-opencv-python>=4.8.0
-pdf2image>=3.1.0
+Pillow
+opencv-python
+pdf2image
 
 # PDF processing
-PyPDF2>=3.0.0
-pymupdf>=1.23.0  # fitz
+PyPDF2
+pymupdf  # fitz
 
 # Presentation processing
-python-pptx>=0.6.21
+python-pptx
 
 # Web and API utilities
-requests>=2.28.0
-beautifulsoup4>=4.11.0
+requests
+beautifulsoup4
 
 # Data handling
-pandas>=1.5.0
-numpy>=1.24.0
+pandas
+numpy
 
 # Environment and utilities
-python-dotenv>=1.0.0
-typing-extensions>=4.5.0
+python-dotenv
+typing-extensions
 
 # Optional: For advanced presentation conversion
 # unoconv  # Uncomment if you need LibreOffice document conversion
