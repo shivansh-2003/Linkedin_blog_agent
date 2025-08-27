@@ -41,5 +41,7 @@ numpy
 python-dotenv
 typing-extensions
 
-# Optional: For advanced presentation conversion
-# unoconv  # Uncomment if you need LibreOffice document conversion
+tavily-python
+
+# DeepAgents for advanced reasoning
+deepagents

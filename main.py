@@ -1,4 +1,4 @@
-# main.py
+# advanced_main.py - Updated main with enhanced agents
 
 import os
 from pathlib import Path
@@ -8,55 +8,81 @@ from pdf_text_pipeline import PDFTextPipeline
 from image_pipeline import ImagePipeline
 from code_pipeline import CodePipeline
 from presentation_pipeline import PresentationPipeline
-from blogger_agent import LinkedInBloggerAgent
+from blogger_agent import EnhancedLinkedInBloggerAgent
+from research_agent import ResearchFeatureAgent
 
 load_dotenv()
 
-class LinkedInBlogAIAssistant:
+class AdvancedLinkedInBlogAIAssistant:
     def __init__(self, 
                  openai_key: Optional[str] = None,
                  anthropic_key: Optional[str] = None,
                  google_key: Optional[str] = None):
-        """Initialize all pipelines and the blogger agent"""
+        """Initialize all pipelines and advanced AI agents"""
         
-        # Initialize pipelines
+        # Initialize existing pipelines
         self.pdf_text_pipeline = PDFTextPipeline(api_key=openai_key)
         self.image_pipeline = ImagePipeline(api_key=google_key)
         self.code_pipeline = CodePipeline(api_key=anthropic_key)
         self.presentation_pipeline = PresentationPipeline(api_key=openai_key, google_api_key=google_key)
-        self.blogger_agent = LinkedInBloggerAgent(anthropic_api_key=anthropic_key)
         
-        print("✅ LinkedIn Blog AI Assistant initialized!")
-        print("Available input methods:")
-        print("1. Text input")
-        print("2. File upload (PDF, image, code, presentation, or text)")
-        print()  # Empty line for spacing
+        # Initialize advanced AI agents
+        self.enhanced_blogger = EnhancedLinkedInBloggerAgent(
+            anthropic_api_key=anthropic_key,
+            openai_api_key=openai_key
+        )
+        
+        self.research_agent = ResearchFeatureAgent(
+            anthropic_api_key=anthropic_key,
+            openai_api_key=openai_key
+        )
+        
+        print("✅ Advanced LinkedIn Blog AI Assistant initialized!")
+        print("🚀 New Features Available:")
+        print("  • Enhanced multi-agent content generation with critique workflow")
+        print("  • Deep research-driven content creation")
+        print("  • Automated quality assessment and revision")
+        print("  • Performance prediction and optimization")
+        print()
     
-    def process_text_input(self, text: str) -> dict:
-        """Process direct text input"""
-        print("📝 Processing text input...")
-        return self.pdf_text_pipeline.extract_from_text(text)
+    def generate_from_research_prompt(self, user_prompt: str) -> dict:
+        """Generate LinkedIn content from user research prompt"""
+        print(f"\n🔬 Starting research-driven content generation...")
+        print(f"📝 Research Topic: {user_prompt}")
+        
+        return self.research_agent.generate_research_driven_post(user_prompt)
     
-    def process_pdf_file(self, pdf_path: str) -> dict:
-        """Process PDF file"""
-        print(f"📄 Processing PDF: {pdf_path}")
-        return self.pdf_text_pipeline.extract_from_pdf(pdf_path)
+    def generate_enhanced_content(self, extraction_result: dict) -> dict:
+        """Generate enhanced content with critique workflow"""
+        if extraction_result["status"] != "success":
+            print(f"❌ Error: {extraction_result.get('error', 'Unknown error')}")
+            return {"status": "error", "error": extraction_result.get('error')}
+        
+        print("\n🚀 Starting enhanced blog generation with AI critique workflow...\n")
+        
+        return self.enhanced_blogger.generate_enhanced_blog_post(
+            extracted_info=extraction_result["extracted_info"],
+            source_type=extraction_result["source_type"]
+        )
     
-    def process_image(self, image_path: str) -> dict:
-        """Process image file"""
-        print(f"🖼️ Processing image: {image_path}")
-        return self.image_pipeline.extract_from_image(image_path)
+    def process_content_with_enhancement(self, content_source, content_type="auto"):
+        """Process content and generate enhanced blog post"""
+        
+        # Process the content based on type
+        if content_type == "text" or isinstance(content_source, str):
+            extraction_result = self.pdf_text_pipeline.extract_from_text(content_source)
+        elif content_type == "file":
+            extraction_result = self.process_file(content_source)
+        else:
+            return {"status": "error", "error": "Invalid content type"}
+        
+        # Generate enhanced content
+        if extraction_result["status"] == "success":
+            return self.generate_enhanced_content(extraction_result)
+        else:
+            return extraction_result
     
-    def process_code_file(self, code_path: str) -> dict:
-        """Process code file"""
-        print(f"💻 Processing code file: {code_path}")
-        return self.code_pipeline.extract_from_code(code_path)
-    
-    def process_presentation(self, presentation_path: str, analyze_images: bool = True) -> dict:
-        """Process presentation file"""
-        print(f"📊 Processing presentation: {presentation_path}")
-        return self.presentation_pipeline.extract_from_presentation(presentation_path, analyze_images)
-    
+    # Existing methods from original main.py
     def process_file(self, file_path: str) -> dict:
         """Process a single file based on its extension"""
         if not os.path.exists(file_path):
@@ -65,59 +91,156 @@ class LinkedInBlogAIAssistant:
         file_ext = Path(file_path).suffix.lower()
         
         if file_ext == '.pdf':
-            # Process PDF as text document by default
-            return self.process_pdf_file(file_path)
+            return self.pdf_text_pipeline.extract_from_pdf(file_path)
         elif file_ext in ['.pptx', '.ppt']:
-            return self.process_presentation(file_path)
+            return self.presentation_pipeline.extract_from_presentation(file_path)
         elif file_ext in ['.jpg', '.jpeg', '.png', '.gif', '.bmp']:
-            return self.process_image(file_path)
+            return self.image_pipeline.extract_from_image(file_path)
         elif self.code_pipeline.is_supported_format(file_path):
-            return self.process_code_file(file_path)
+            return self.code_pipeline.extract_from_code(file_path)
         elif file_ext == '.txt':
             return self.pdf_text_pipeline.extract_from_text_file(file_path)
         else:
             return {"status": "error", "error": f"Unsupported file type: {file_path}"}
     
-    def generate_blog(self, extraction_result: dict) -> str:
-        """Generate LinkedIn blog post from extracted information"""
-        if extraction_result["status"] != "success":
-            print(f"❌ Error: {extraction_result.get('error', 'Unknown error')}")
-            return None
-        
-        print("\n🚀 Starting blog generation with human-in-the-loop...\n")
-        
-        return self.blogger_agent.generate_blog_post(
-            extracted_info=extraction_result["extracted_info"],
-            source_type=extraction_result["source_type"]
-        )
-    
-    def save_post(self, post_content: str, filename: str = None) -> str:
-        """Save the generated post to a file"""
+    def save_advanced_results(self, results: dict, filename: str = None) -> str:
+        """Save advanced results with comprehensive information"""
         if not filename:
-            filename = input("Enter filename (without extension): ") + "_linkedin_post.txt"
+            timestamp = __import__('datetime').datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"linkedin_post_advanced_{timestamp}.txt"
+        
+        content = f"""# LinkedIn Post - Advanced AI Generation Report
+
+## Final LinkedIn Post
+{results.get('final_post', 'No final post generated')}
+
+## Performance Prediction
+"""
+        
+        if 'performance_prediction' in results:
+            perf = results['performance_prediction']
+            content += f"""
+- Engagement Likelihood: {perf.get('engagement_likelihood', 'N/A')}%
+- Viral Potential: {perf.get('viral_potential', 'N/A')}%
+- Optimization Score: {perf.get('optimization_score', 'N/A')}/100
+- Predicted Reach: {perf.get('predicted_reach', 'N/A')}
+"""
+        
+        if 'confidence_score' in results:
+            content += f"\n- Research Confidence: {results['confidence_score']:.1f}%"
+        
+        content += f"""
+
+## Generation Statistics
+- Revision Count: {results.get('revision_count', 0)}
+- Research Depth: {results.get('research_depth', 'N/A')} areas
+"""
+        
+        if results.get('critique_history'):
+            content += "\n## Quality Assessment History\n"
+            for i, critique in enumerate(results['critique_history'], 1):
+                content += f"""
+### Iteration {i}
+- Language Score: {critique.language_score}/10
+- Content Score: {critique.content_score}/10  
+- Engagement Score: {critique.engagement_score}/10
+- Feedback: {critique.overall_recommendation[:200]}...
+"""
+        
+        if results.get('research_citations'):
+            content += f"\n## Research Sources\n"
+            for i, citation in enumerate(results['research_citations'], 1):
+                content += f"{i}. {citation}\n"
+        
+        content += f"""
+## Posting Recommendations
+- Best posting times: Tuesday-Thursday, 8-10 AM or 5-7 PM
+- Engage with comments within the first hour
+- Monitor performance and iterate based on results
+- Consider A/B testing different versions
+
+---
+Generated by Advanced LinkedIn Blog AI Assistant
+Timestamp: {__import__('datetime').datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+"""
         
         with open(filename, 'w', encoding='utf-8') as f:
-            f.write(post_content)
-        print(f"✅ Post saved to {filename}")
+            f.write(content)
+        
+        print(f"✅ Advanced results saved to {filename}")
         return filename
     
-    def run(self):
-        """Main interactive mode"""
-        print("\n🎯 LinkedIn Blog AI Assistant - Interactive Mode")
-        print("=" * 50)
+    def run_interactive_mode(self):
+        """Enhanced interactive mode with advanced options"""
+        print("\n🎯 Advanced LinkedIn Blog AI Assistant - Interactive Mode")
+        print("=" * 60)
         
         while True:
-            print("\nChoose input method:")
-            print("1. Text input")
-            print("2. File upload (PDF, image, code, presentation, or text)")
-            print("3. Exit")
+            print("\nChoose content generation method:")
+            print("1. 📚 Research-Driven Content (New! - AI researches and creates)")
+            print("2. 📄 Enhanced File Processing (New! - AI critique workflow)")
+            print("3. 📝 Enhanced Text Processing (New! - AI critique workflow)")  
+            print("4. 🔄 Basic Mode (Original functionality)")
+            print("5. 🚪 Exit")
             
-            choice = input("\nEnter your choice (1-3): ").strip()
-            
-            extraction_result = None
+            choice = input("\nEnter your choice (1-5): ").strip()
             
             if choice == "1":
-                print("\nEnter your text (type 'END' on a new line to finish):")
+                # Research-driven content generation
+                print("\n🔬 Research-Driven Content Generation")
+                print("Enter a topic, question, or research prompt:")
+                user_prompt = input("Research prompt: ").strip()
+                
+                if user_prompt:
+                    results = self.generate_from_research_prompt(user_prompt)
+                    
+                    if results.get("status") == "success":
+                        print("\n" + "="*60)
+                        print("🎉 RESEARCH-DRIVEN LINKEDIN POST GENERATED!")
+                        print("="*60)
+                        print(results.get("final_post", ""))
+                        print("="*60)
+                        
+                        print(f"\n📊 Research Quality Metrics:")
+                        print(f"   • Confidence Score: {results.get('confidence_score', 0):.1f}%")
+                        print(f"   • Research Areas: {results.get('research_depth', 0)}")
+                        print(f"   • Revisions Made: {results.get('revision_count', 0)}")
+                        
+                        # Save option
+                        save_choice = input("\n💾 Save results to file? (y/n): ").lower()
+                        if save_choice == 'y':
+                            self.save_advanced_results(results)
+                    else:
+                        print(f"❌ Error: {results.get('error', 'Unknown error')}")
+                
+            elif choice == "2":
+                # Enhanced file processing
+                print("\n📄 Enhanced File Processing")
+                file_path = input("Enter file path: ").strip()
+                
+                if file_path:
+                    results = self.process_content_with_enhancement(file_path, "file")
+                    
+                    if results.get("status") == "success":
+                        print("\n" + "="*60)
+                        print("🎉 ENHANCED LINKEDIN POST GENERATED!")
+                        print("="*60)
+                        print(results.get("final_post", ""))
+                        print("="*60)
+                        
+                        self._display_enhancement_metrics(results)
+                        
+                        # Save option
+                        save_choice = input("\n💾 Save results to file? (y/n): ").lower()
+                        if save_choice == 'y':
+                            self.save_advanced_results(results)
+                    else:
+                        print(f"❌ Error: {results.get('error', 'Unknown error')}")
+            
+            elif choice == "3":
+                # Enhanced text processing
+                print("\n📝 Enhanced Text Processing")
+                print("Enter your text (type 'END' on a new line to finish):")
                 full_text = []
                 while True:
                     line = input()
@@ -126,51 +249,106 @@ class LinkedInBlogAIAssistant:
                     full_text.append(line)
                 
                 if full_text:
-                    extraction_result = self.process_text_input("\n".join(full_text))
-                
-            elif choice == "2":
-                file_path = input("\nEnter file path: ").strip()
-                extraction_result = self.process_file(file_path)
+                    text_content = "\n".join(full_text)
+                    results = self.process_content_with_enhancement(text_content, "text")
                     
-            elif choice == "3":
-                print("\n👋 Thank you for using LinkedIn Blog AI Assistant!")
+                    if results.get("status") == "success":
+                        print("\n" + "="*60)
+                        print("🎉 ENHANCED LINKEDIN POST GENERATED!")
+                        print("="*60)
+                        print(results.get("final_post", ""))
+                        print("="*60)
+                        
+                        self._display_enhancement_metrics(results)
+                        
+                        # Save option
+                        save_choice = input("\n💾 Save results to file? (y/n): ").lower()
+                        if save_choice == 'y':
+                            self.save_advanced_results(results)
+                    else:
+                        print(f"❌ Error: {results.get('error', 'Unknown error')}")
+            
+            elif choice == "4":
+                # Basic mode (original functionality)
+                print("\n🔄 Basic Mode - Original Functionality")
+                print("Choose input method:")
+                print("1. Text input")
+                print("2. File upload")
+                
+                basic_choice = input("Enter choice (1-2): ").strip()
+                
+                if basic_choice == "1":
+                    print("\nEnter your text (type 'END' on a new line to finish):")
+                    full_text = []
+                    while True:
+                        line = input()
+                        if line == "END":
+                            break
+                        full_text.append(line)
+                    
+                    if full_text:
+                        text_content = "\n".join(full_text)
+                        extraction_result = self.pdf_text_pipeline.extract_from_text(text_content)
+                        # Use basic generation (would need to implement fallback)
+                        print("Basic mode content processed (enhanced generation not used)")
+                
+                elif basic_choice == "2":
+                    file_path = input("Enter file path: ").strip()
+                    extraction_result = self.process_file(file_path)
+                    print("Basic mode file processed (enhanced generation not used)")
+            
+            elif choice == "5":
+                print("\n👋 Thank you for using Advanced LinkedIn Blog AI Assistant!")
                 break
             else:
-                print("❌ Invalid choice! Please enter 1-3.")
-                continue
-            
-            # Generate blog if extraction was successful
-            if extraction_result and extraction_result["status"] == "success":
-                final_post = self.generate_blog(extraction_result)
-                
-                if final_post:
-                    # Ask if user wants to save the post
-                    save_choice = input("\n💾 Save the final post to file? (y/n): ").lower()
-                    if save_choice == 'y':
-                        self.save_post(final_post)
+                print("❌ Invalid choice! Please enter 1-5.")
+    
+    def _display_enhancement_metrics(self, results: dict):
+        """Display enhancement and performance metrics"""
+        if results.get("performance_prediction"):
+            perf = results["performance_prediction"]
+            print(f"\n📊 Performance Prediction:")
+            print(f"   • Engagement Likelihood: {perf.get('engagement_likelihood', 0)}%")
+            print(f"   • Viral Potential: {perf.get('viral_potential', 0)}%")
+            print(f"   • Optimization Score: {perf.get('optimization_score', 0)}/100")
+            print(f"   • Predicted Reach: {perf.get('predicted_reach', 'Unknown')}")
+        
+        print(f"\n🔄 Enhancement Metrics:")
+        print(f"   • Revisions Made: {results.get('revision_count', 0)}")
+        print(f"   • Versions Generated: {len(results.get('all_versions', []))}")
+        
+        if results.get("critique_history"):
+            latest_critique = results["critique_history"][-1]
+            print(f"   • Final Quality Scores:")
+            print(f"     - Language: {latest_critique.language_score}/10")
+            print(f"     - Content: {latest_critique.content_score}/10")
+            print(f"     - Engagement: {latest_critique.engagement_score}/10")
 
 def main():
-    """Main entry point - simplified without argparse"""
-    print("🚀 Starting LinkedIn Blog AI Assistant...")
-    print("Note: You can set API keys as environment variables:")
-    print("- OPENAI_API_KEY")
-    print("- ANTHROPIC_API_KEY") 
-    print("- GOOGLE_API_KEY")
-
+    """Main entry point for advanced LinkedIn Blog AI Assistant"""
+    print("🚀 Starting Advanced LinkedIn Blog AI Assistant...")
+    print("Features: Enhanced AI agents, research capabilities, critique workflow")
     
-    # Get API keys from environment variables
+    # Get API keys from environment
     openai_key = os.getenv('OPENAI_API_KEY')
     anthropic_key = os.getenv('ANTHROPIC_API_KEY')
     google_key = os.getenv('GOOGLE_API_KEY')
     
-    # Initialize and run assistant
-    assistant = LinkedInBlogAIAssistant(
+    if not all([openai_key, anthropic_key, google_key]):
+        print("⚠️  Warning: Some API keys are missing. Set them as environment variables:")
+        print("   • OPENAI_API_KEY")
+        print("   • ANTHROPIC_API_KEY") 
+        print("   • GOOGLE_API_KEY")
+        print()
+    
+    # Initialize and run advanced assistant
+    assistant = AdvancedLinkedInBlogAIAssistant(
         openai_key=openai_key,
         anthropic_key=anthropic_key,
         google_key=google_key
     )
     
-    assistant.run()
+    assistant.run_interactive_mode()
 
 if __name__ == "__main__":
     main()
