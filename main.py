@@ -25,7 +25,7 @@ class AdvancedLinkedInBlogAIAssistant:
         self.image_pipeline = ImagePipeline(api_key=google_key)
         self.code_pipeline = CodePipeline(api_key=anthropic_key)
         self.presentation_pipeline = PresentationPipeline(api_key=openai_key, google_api_key=google_key)
-        
+    
         # Initialize advanced AI agents
         self.enhanced_blogger = EnhancedLinkedInBloggerAgent(
             anthropic_api_key=anthropic_key,

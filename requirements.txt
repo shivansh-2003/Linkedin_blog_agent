@@ -25,7 +25,7 @@ pdf2image
 # PDF processing
 PyPDF2
 pymupdf  # fitz
-
+pypdf
 # Presentation processing
 python-pptx
 
