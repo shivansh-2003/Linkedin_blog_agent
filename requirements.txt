@@ -45,3 +45,10 @@ tavily-python
 
 # DeepAgents for advanced reasoning
 deepagents
+
+
+langsmith
+
+# Streamlit web application framework
+streamlit
+streamlit-chat

@@ -1,6 +1,10 @@
 from typing import Literal
 from langgraph.graph import StateGraph, END, START
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from langsmith_config import trace_step, langsmith_client
 from blog_generation.config import (
     BlogGenerationState, BlogPost, CritiqueResult, HumanFeedback,
     ProcessingStatus, BlogQuality, BlogConfig
@@ -95,8 +99,17 @@ class BlogGenerationWorkflow:
     
     # ===== NODE IMPLEMENTATIONS =====
     
+    @trace_step("blog_generation", "llm")
     def generate_content_node(self, state: BlogGenerationState) -> dict:
-        """Generate blog content from source material"""
+        """
+        Generate blog content with detailed tracing
+        
+        This shows you:
+        - Input prompt construction
+        - Model response quality
+        - Parsing success/failure
+        - Generation time
+        """
         print(f"\n🤖 === GENERATE CONTENT NODE (Iteration {state.iteration_count + 1}) ===")
         try:
             state.current_status = ProcessingStatus.GENERATING
@@ -334,9 +347,21 @@ class BlogGenerationWorkflow:
         return list(dict.fromkeys(areas))
     
     # ===== PUBLIC RUNNER =====
+    @trace_step("workflow_execution", "workflow")
     def run(self, initial_state: BlogGenerationState) -> BlogGenerationState:
-        """Execute the compiled workflow and return the final state"""
+        """
+        Execute workflow with comprehensive tracing
+        
+        This will show you:
+        - The complete workflow execution path
+        - Time spent in each node
+        - State transitions between nodes
+        - Quality improvements across iterations
+        """
         assert self.workflow is not None, "Workflow not compiled"
+        
+        # LangGraph will automatically trace the workflow execution
+        # Each node will appear as a separate trace step
         result = self.workflow.invoke(initial_state)
         
         # Ensure we return a proper BlogGenerationState object

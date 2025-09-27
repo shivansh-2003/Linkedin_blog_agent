@@ -19,7 +19,7 @@ from typing import Optional
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
 
-from chatbot.chatbot_orchestrator import (
+from chatbot.chatbot_orchastrator import (
     ChatbotOrchestrator, create_chatbot_session, get_welcome_message
 )
 from chatbot.config import ChatbotConfig, ChatStage

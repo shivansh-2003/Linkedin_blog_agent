@@ -7,12 +7,17 @@ FastAPI app with ingestion and blog generation endpoints.
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List, Dict, Any
 import os
 import tempfile
 from pathlib import Path
 import shutil
 import sys
+import uuid
+import time
+
+# Import LangSmith configuration
+from langsmith_config import trace_step, verify_langsmith_setup
 
 # Ensure ingestion and blog_generation modules are importable when running API from project root
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -32,6 +37,11 @@ if BLOG_GEN_DIR not in sys.path:
 
 from blog_generation.workflow import BlogGenerationWorkflow
 from blog_generation.config import BlogGenerationState, ProcessingStatus
+
+# Import chatbot modules
+from chatbot.chatbot_orchastrator import ChatbotOrchestrator
+from chatbot.config import ChatStage, MessageType, ChatMessage
+from chatbot.conversation_memory import ConversationMemoryManager
 
 # Helper to make nested structures JSON-safe (e.g., remove bytes)
 def _sanitize_for_json(obj):
@@ -58,15 +68,76 @@ class BlogResponse(BaseModel):
     iterations: Optional[int] = None
     quality_score: Optional[float] = None
 
+# Chatbot-specific Pydantic models
+class ChatMessageRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+
+class ChatMessageResponse(BaseModel):
+    success: bool
+    response: str
+    session_id: str
+    current_stage: str
+    blog_context: Optional[dict] = None
+    error: Optional[str] = None
+
+class ChatSessionResponse(BaseModel):
+    session_id: str
+    current_stage: str
+    message_count: int
+    blog_context: Optional[dict] = None
+    created_at: str
+
+class ChatHistoryResponse(BaseModel):
+    session_id: str
+    messages: List[dict]
+    current_stage: str
+    blog_context: Optional[dict] = None
+
+class FeedbackRequest(BaseModel):
+    session_id: str
+    feedback: str
+    feedback_type: str = "general"  # general, specific, approval, rejection
+
+class ApprovalRequest(BaseModel):
+    session_id: str
+    approved: bool
+    final_notes: Optional[str] = None
+
 app = FastAPI(title="LinkedIn Blog AI Assistant", version="2.0.0")
 
-# Initialize processors
+# Initialize processors (these will now be traced)
 ingestion_processor = UnifiedProcessor()
 blog_workflow = BlogGenerationWorkflow()
 
+# Initialize chatbot orchestrator for single-user session management
+chatbot_orchestrator = ChatbotOrchestrator()
+memory_manager = ConversationMemoryManager()
+
+# Simple session storage for single-user focus
+active_sessions: Dict[str, Dict[str, Any]] = {}
+
+# Verify LangSmith setup on startup
+@app.on_event("startup")
+async def startup_event():
+    """Verify LangSmith configuration on API startup"""
+    if verify_langsmith_setup():
+        print("🔍 LangSmith monitoring enabled for API endpoints")
+    else:
+        print("⚠️ LangSmith setup verification failed")
+
 @app.post("/api/ingest")
+@trace_step("api_ingest", "tool")
 async def ingest_any_file(file: UploadFile = File(...)):
-    """Process any supported document through the ingestion pipeline and return a JSON payload."""
+    """
+    Process file through ingestion pipeline with API-level tracing
+    
+    This will show you:
+    - API endpoint performance
+    - File processing success rates
+    - Response times for different file types
+    - Error patterns from API usage
+    """
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as tmp_file:
             shutil.copyfileobj(file.file, tmp_file)
@@ -103,8 +174,13 @@ async def ingest_any_file(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
 
 @app.post("/api/generate-blog", response_model=BlogResponse)
+@trace_step("api_blog_generation", "workflow")
 async def generate_blog_from_text(request: TextBlogRequest):
-    """Generate a LinkedIn blog post from text input using the LangGraph workflow."""
+    """
+    Generate blog with complete workflow tracing
+    
+    This shows the full blog generation pipeline from API perspective
+    """
     try:
         # Create initial state for blog generation
         initial_state = BlogGenerationState(
@@ -146,7 +222,7 @@ async def generate_blog_from_text(request: TextBlogRequest):
             response.error = result_state.last_error
             
         return response
-        
+            
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Blog generation failed: {str(e)}")
 
@@ -231,6 +307,291 @@ async def generate_blog_from_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Blog generation from file failed: {str(e)}")
 
+# ============================================================================
+# CHATBOT API ENDPOINTS - Single User Session Management
+# ============================================================================
+
+@app.post("/api/chat/start", response_model=ChatSessionResponse)
+@trace_step("api_chat_start", "tool")
+async def start_chat_session():
+    """
+    Start a new chat session for LinkedIn post improvement
+    
+    Returns a new session ID and initializes the conversation state
+    """
+    try:
+        # Generate simple session ID (timestamp-based for single user)
+        session_id = f"session_{int(time.time())}"
+        
+        # Initialize session state
+        session_data = {
+            "session_id": session_id,
+            "created_at": time.time(),
+            "current_stage": ChatStage.INITIAL.value,
+            "message_count": 0,
+            "blog_context": None,
+            "conversation_state": None
+        }
+        
+        # Store in active sessions
+        active_sessions[session_id] = session_data
+        
+        return ChatSessionResponse(
+            session_id=session_id,
+            current_stage=ChatStage.INITIAL.value,
+            message_count=0,
+            blog_context=None,
+            created_at=time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start chat session: {str(e)}")
+
+@app.post("/api/chat/message", response_model=ChatMessageResponse)
+@trace_step("api_chat_message", "workflow")
+async def send_chat_message(request: ChatMessageRequest):
+    """
+    Send a message to the chatbot and get a response
+    
+    This handles the core conversation flow for LinkedIn post improvement
+    """
+    try:
+        session_id = request.session_id
+        
+        # If no session_id provided, create a new session
+        if not session_id:
+            session_id = f"session_{int(time.time())}"
+            active_sessions[session_id] = {
+                "session_id": session_id,
+                "created_at": time.time(),
+                "current_stage": ChatStage.INITIAL.value,
+                "message_count": 0,
+                "blog_context": None,
+                "conversation_state": None
+            }
+        
+        # Check if session exists
+        if session_id not in active_sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session_data = active_sessions[session_id]
+        
+        # Process message through chatbot orchestrator
+        response = await chatbot_orchestrator.process_user_input(request.message)
+        
+        # Update session data
+        session_data["message_count"] += 1
+        session_data["current_stage"] = chatbot_orchestrator.current_stage.value
+        
+        # Get blog context if available
+        blog_context = None
+        if chatbot_orchestrator.current_blog_context:
+            blog_context = {
+                "source_content": chatbot_orchestrator.current_blog_context.source_content,
+                "ai_analysis": chatbot_orchestrator.current_blog_context.ai_analysis,
+                "key_insights": chatbot_orchestrator.current_blog_context.key_insights,
+                "current_draft": chatbot_orchestrator.current_blog_context.current_draft,
+                "user_requirements": chatbot_orchestrator.current_blog_context.user_requirements,
+                "feedback_history": chatbot_orchestrator.current_blog_context.feedback_history
+            }
+            session_data["blog_context"] = blog_context
+        
+        return ChatMessageResponse(
+            success=True,
+            response=response,
+            session_id=session_id,
+            current_stage=chatbot_orchestrator.current_stage.value,
+            blog_context=blog_context
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Chat message processing failed: {str(e)}")
+
+@app.get("/api/chat/history/{session_id}", response_model=ChatHistoryResponse)
+@trace_step("api_chat_history", "tool")
+async def get_chat_history(session_id: str):
+    """
+    Get the conversation history for a specific session
+    """
+    try:
+        # Check if session exists
+        if session_id not in active_sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session_data = active_sessions[session_id]
+        
+        # Get conversation history from memory manager
+        conversation_state = memory_manager.get_conversation_state(session_id)
+        
+        messages = []
+        if conversation_state and conversation_state.messages:
+            for msg in conversation_state.messages:
+                messages.append({
+                    "message_id": msg.message_id,
+                    "message_type": msg.message_type.value,
+                    "content": msg.content,
+                    "timestamp": msg.timestamp.isoformat(),
+                    "metadata": msg.metadata
+                })
+        
+        return ChatHistoryResponse(
+            session_id=session_id,
+            messages=messages,
+            current_stage=session_data["current_stage"],
+            blog_context=session_data.get("blog_context")
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get chat history: {str(e)}")
+
+@app.post("/api/chat/feedback", response_model=ChatMessageResponse)
+@trace_step("api_chat_feedback", "workflow")
+async def submit_feedback(request: FeedbackRequest):
+    """
+    Submit feedback on the current blog draft for improvement
+    """
+    try:
+        session_id = request.session_id
+        
+        # Check if session exists
+        if session_id not in active_sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session_data = active_sessions[session_id]
+        
+        # Process feedback through chatbot
+        feedback_message = f"User feedback ({request.feedback_type}): {request.feedback}"
+        response = await chatbot_orchestrator.process_user_input(feedback_message)
+        
+        # Update session data
+        session_data["message_count"] += 1
+        session_data["current_stage"] = chatbot_orchestrator.current_stage.value
+        
+        # Update blog context
+        blog_context = None
+        if chatbot_orchestrator.current_blog_context:
+            blog_context = {
+                "source_content": chatbot_orchestrator.current_blog_context.source_content,
+                "ai_analysis": chatbot_orchestrator.current_blog_context.ai_analysis,
+                "key_insights": chatbot_orchestrator.current_blog_context.key_insights,
+                "current_draft": chatbot_orchestrator.current_blog_context.current_draft,
+                "user_requirements": chatbot_orchestrator.current_blog_context.user_requirements,
+                "feedback_history": chatbot_orchestrator.current_blog_context.feedback_history
+            }
+            session_data["blog_context"] = blog_context
+        
+        return ChatMessageResponse(
+            success=True,
+            response=response,
+            session_id=session_id,
+            current_stage=chatbot_orchestrator.current_stage.value,
+            blog_context=blog_context
+        )
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Feedback processing failed: {str(e)}")
+
+@app.post("/api/chat/approve", response_model=ChatMessageResponse)
+@trace_step("api_chat_approve", "workflow")
+async def approve_blog_draft(request: ApprovalRequest):
+    """
+    Approve or reject the current blog draft
+    """
+    try:
+        session_id = request.session_id
+        
+        # Check if session exists
+        if session_id not in active_sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        session_data = active_sessions[session_id]
+        
+        # Process approval/rejection
+        if request.approved:
+            approval_message = f"APPROVE: {request.final_notes or 'Blog draft approved'}"
+        else:
+            approval_message = f"REJECT: {request.final_notes or 'Blog draft needs more work'}"
+        
+        response = await chatbot_orchestrator.process_user_input(approval_message)
+        
+        # Update session data
+        session_data["message_count"] += 1
+        session_data["current_stage"] = chatbot_orchestrator.current_stage.value
+        
+        # Update blog context
+        blog_context = None
+        if chatbot_orchestrator.current_blog_context:
+            blog_context = {
+                "source_content": chatbot_orchestrator.current_blog_context.source_content,
+                "ai_analysis": chatbot_orchestrator.current_blog_context.ai_analysis,
+                "key_insights": chatbot_orchestrator.current_blog_context.key_insights,
+                "current_draft": chatbot_orchestrator.current_blog_context.current_draft,
+                "user_requirements": chatbot_orchestrator.current_blog_context.user_requirements,
+                "feedback_history": chatbot_orchestrator.current_blog_context.feedback_history
+            }
+            session_data["blog_context"] = blog_context
+        
+        return ChatMessageResponse(
+            success=True,
+            response=response,
+            session_id=session_id,
+            current_stage=chatbot_orchestrator.current_stage.value,
+            blog_context=blog_context
+        )
+            
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Approval processing failed: {str(e)}")
+
+@app.delete("/api/chat/session/{session_id}")
+@trace_step("api_chat_delete", "tool")
+async def delete_chat_session(session_id: str):
+    """
+    Delete a chat session and clean up resources
+    """
+    try:
+        # Check if session exists
+        if session_id not in active_sessions:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        # Remove from active sessions
+        del active_sessions[session_id]
+        
+        # Clean up memory manager session
+        try:
+            memory_manager.cleanup_session(session_id)
+        except:
+            pass  # Ignore cleanup errors
+        
+        return {"success": True, "message": f"Session {session_id} deleted successfully"}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
+
+@app.get("/api/chat/sessions")
+@trace_step("api_chat_sessions", "tool")
+async def list_chat_sessions():
+    """
+    List all active chat sessions (for single-user management)
+    """
+    try:
+        sessions = []
+        for session_id, session_data in active_sessions.items():
+            sessions.append({
+                "session_id": session_id,
+                "created_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(session_data["created_at"])),
+                "current_stage": session_data["current_stage"],
+                "message_count": session_data["message_count"],
+                "has_blog_context": session_data["blog_context"] is not None
+            })
+        
+        return {
+            "sessions": sessions,
+            "total_sessions": len(sessions)
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(e)}")
+
 @app.get("/")
 async def root():
     """API information and available endpoints."""
@@ -242,6 +603,13 @@ async def root():
             "ingest": "/api/ingest - Process files through ingestion pipeline",
             "generate_blog_text": "/api/generate-blog - Generate blog from text input",
             "generate_blog_file": "/api/generate-blog-from-file - Generate blog from uploaded file",
+            "chat_start": "/api/chat/start - Start new chat session",
+            "chat_message": "/api/chat/message - Send message to chatbot",
+            "chat_history": "/api/chat/history/{session_id} - Get conversation history",
+            "chat_feedback": "/api/chat/feedback - Submit feedback on blog draft",
+            "chat_approve": "/api/chat/approve - Approve/reject blog draft",
+            "chat_sessions": "/api/chat/sessions - List active sessions",
+            "chat_delete": "/api/chat/session/{session_id} - Delete session",
             "health": "/health - API health check",
             "docs": "/docs - Interactive API documentation"
         },
@@ -249,6 +617,9 @@ async def root():
             "file_processing": "PDF, Word, PPT, Code, Text, Image",
             "blog_generation": "LangGraph-powered Generate → Critique → Refine workflow",
             "quality_scoring": "Automated quality assessment and improvement",
+            "chatbot": "Single-user conversational interface for LinkedIn post improvement",
+            "session_management": "Simple session-based conversation history",
+            "human_in_loop": "Interactive feedback and approval workflow",
             "reload_support": "Force regeneration with reload parameter"
         }
     }
@@ -260,6 +631,8 @@ async def health_check():
         "status": "healthy",
         "ingestion_ready": True,
         "blog_generation_ready": True,
+        "chatbot_ready": True,
+        "active_sessions": len(active_sessions),
         "version": "2.0.0"
     }
 

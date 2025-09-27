@@ -1,6 +1,11 @@
 import google.generativeai as genai
 from groq import Groq
 from typing import List
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from langsmith_config import trace_step, langsmith_client
 from ingestion.config import Config, ExtractedContent, ProcessingModel, ContentType
 from ingestion.prompt_templates import (
     CODE_SYSTEM_PROMPT,
@@ -20,8 +25,17 @@ class AIAnalyzer:
         genai.configure(api_key=Config.GEMINI_API_KEY)
         self.gemini_model = genai.GenerativeModel('gemini-2.0-flash')
     
+    @trace_step("content_analysis", "llm")
     def analyze_content(self, extracted_content: ExtractedContent) -> tuple[str, List[str]]:
-        """Analyze extracted content and return summary and insights"""
+        """
+        Analyze extracted content with detailed tracing
+        
+        This trace will show you:
+        - Which content type was analyzed
+        - Processing time for each model call
+        - Input/output token counts
+        - Model selection decisions
+        """
         
         if extracted_content.content_type == ContentType.IMAGE:
             return self._analyze_with_gemini(extracted_content)

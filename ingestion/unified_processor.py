@@ -1,4 +1,9 @@
 from typing import Optional
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from langsmith_config import trace_step, langsmith_client
 from ingestion.config import ProcessedContent, ContentType
 from ingestion.file_detection import FileDetector
 from ingestion.pdf_processor import PDFProcessor
@@ -25,8 +30,17 @@ class UnifiedProcessor:
             ContentType.IMAGE: ImageProcessor
         }
     
+    @trace_step("file_processing", "workflow")
     def process_file(self, file_path: str) -> ProcessedContent:
-        """Process a single file and return structured result"""
+        """
+        Process a single file through the appropriate processor with comprehensive tracing
+        
+        The @trace_step decorator will create a trace that shows:
+        - Input: the file path
+        - Processing time
+        - Success/failure status
+        - Any errors that occur
+        """
         
         # Validate file
         is_valid, message = FileDetector.validate_file(file_path)
