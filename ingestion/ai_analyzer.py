@@ -1,8 +1,8 @@
 import google.generativeai as genai
 from groq import Groq
 from typing import List
-from config import Config, ExtractedContent, ProcessingModel, ContentType
-from prompt_templates import (
+from ingestion.config import Config, ExtractedContent, ProcessingModel, ContentType
+from ingestion.prompt_templates import (
     CODE_SYSTEM_PROMPT,
     PPT_SYSTEM_PROMPT,
     build_code_user_prompt,

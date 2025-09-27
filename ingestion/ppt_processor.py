@@ -2,7 +2,7 @@ import time
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
 from typing import Dict, Any, List
-from config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
+from ingestion.config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
 
 class PPTProcessor:
     """Process PowerPoint files and extract content"""

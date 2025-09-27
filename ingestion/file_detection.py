@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 from typing import Optional, Tuple
-from config import Config, ContentType, DocumentMetadata
+from ingestion.config import Config, ContentType, DocumentMetadata
 
 class FileDetector:
     """Detects file types and extracts basic metadata"""

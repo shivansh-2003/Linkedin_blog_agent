@@ -1,7 +1,7 @@
 import time
 from pathlib import Path
 from typing import Optional
-from config import ExtractedContent, ContentType, ProcessingModel
+from ingestion.config import ExtractedContent, ContentType, ProcessingModel
 
 
 class ImageProcessor:

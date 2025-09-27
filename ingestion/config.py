@@ -35,6 +35,7 @@ class CodeAnalysis(BaseModel):
     imports: List[str] = Field(default_factory=list)
     summary: str
     complexity_score: Optional[int] = None
+    has_syntax_errors: bool = False
 
 class VisualAnalysis(BaseModel):
     image_type: str

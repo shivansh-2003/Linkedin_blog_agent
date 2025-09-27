@@ -1,7 +1,7 @@
 import time
 from langchain_community.document_loaders import PyPDFLoader
 from typing import Dict, Any
-from config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
+from ingestion.config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
 
 class PDFProcessor:
     """Process PDF files and extract content"""

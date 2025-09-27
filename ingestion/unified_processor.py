@@ -1,13 +1,13 @@
 from typing import Optional
-from config import ProcessedContent, ContentType
-from file_detection import FileDetector
-from pdf_processor import PDFProcessor
-from word_processor import WordProcessor
-from ppt_processor import PPTProcessor
-from code_processor import CodeProcessor
-from image_processor import ImageProcessor
-from text_processor import TextProcessor
-from ai_analyzer import AIAnalyzer
+from ingestion.config import ProcessedContent, ContentType
+from ingestion.file_detection import FileDetector
+from ingestion.pdf_processor import PDFProcessor
+from ingestion.word_processor import WordProcessor
+from ingestion.ppt_processor import PPTProcessor
+from ingestion.code_processor import CodeProcessor
+from ingestion.image_processor import ImageProcessor
+from ingestion.text_processor import TextProcessor
+from ingestion.ai_analyzer import AIAnalyzer
 
 class UnifiedProcessor:
     """Main orchestrator for processing different file types"""

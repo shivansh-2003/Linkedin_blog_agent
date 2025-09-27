@@ -1,12 +1,11 @@
-import asyncio
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Any
 from pathlib import Path
-from config import ProcessedContent, ContentType
-from unified_processor import UnifiedProcessor
+from ingestion.config import ProcessedContent, ContentType
+from ingestion.unified_processor import UnifiedProcessor
 
 class BatchProcessor:
-    """Handle batch processing of multiple files"""
+    """Simplified batch processing using LangChain patterns"""
     
     def __init__(self, max_workers: int = 4):
         self.max_workers = max_workers

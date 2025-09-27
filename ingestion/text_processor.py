@@ -1,19 +1,30 @@
 import time
 from pathlib import Path
 from typing import Dict, Any
-from config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
+from langchain_community.document_loaders import TextLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from ingestion.config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
 
 class TextProcessor:
-    """Process text files and extract content"""
+    """Process text files using LangChain loaders and splitters"""
     
     @staticmethod
     def extract_content(file_path: str) -> ExtractedContent:
-        """Extract content from text files"""
+        """Extract content from text files using LangChain"""
         start_time = time.time()
         
-        # Read file content
-        with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
-            raw_text = file.read()
+        # Use LangChain TextLoader for consistent document handling
+        loader = TextLoader(file_path, encoding='utf-8')
+        documents = loader.load()
+        raw_text = documents[0].page_content if documents else ""
+        
+        # Use LangChain text splitter for better chunking
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200,
+            separators=["\n\n", "\n", " ", ""]
+        )
+        chunks = text_splitter.split_text(raw_text)
         
         # Analyze text structure
         lines = raw_text.splitlines()
@@ -28,7 +39,9 @@ class TextProcessor:
             "line_count": len(lines),
             "paragraph_count": len(paragraphs),
             "empty_lines": len([line for line in lines if not line.strip()]),
-            "paragraphs": paragraphs[:10] if len(paragraphs) > 10 else paragraphs,  # First 10 paragraphs
+            "paragraphs": paragraphs[:10] if len(paragraphs) > 10 else paragraphs,
+            "chunks": chunks[:5],  # First 5 chunks for context
+            "total_chunks": len(chunks),
             "has_headers": is_markdown and any(line.strip().startswith('#') for line in lines)
         }
         
@@ -39,7 +52,9 @@ class TextProcessor:
             "word_count": len(raw_text.split()),
             "line_count": len(lines),
             "paragraph_count": len(paragraphs),
-            "average_line_length": sum(len(line) for line in lines) / len(lines) if lines else 0
+            "chunks_count": len(chunks),
+            "average_line_length": sum(len(line) for line in lines) / len(lines) if lines else 0,
+            "source": documents[0].metadata.get("source", file_path) if documents else file_path
         }
         
         processing_time = time.time() - start_time

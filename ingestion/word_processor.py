@@ -1,7 +1,7 @@
 import time
 from langchain_community.document_loaders import Docx2txtLoader
 from typing import Dict, Any
-from config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
+from ingestion.config import ExtractedContent, ContentType, ProcessingModel, DocumentMetadata
 
 class WordProcessor:
     """Process Word documents and extract content"""
