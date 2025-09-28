@@ -6,6 +6,7 @@ FastAPI app with ingestion and blog generation endpoints.
 
 from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 import os
@@ -109,6 +110,15 @@ class ApprovalRequest(BaseModel):
     final_notes: Optional[str] = None
 
 app = FastAPI(title="LinkedIn Blog AI Assistant", version="2.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
 
 # Initialize processors (these will now be traced)
 ingestion_processor = UnifiedProcessor()
