@@ -25,6 +25,12 @@ class ProcessingStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
+class AggregationStrategy(str, Enum):
+    SYNTHESIS = "synthesis"      # Blend all insights together
+    COMPARISON = "comparison"    # Compare/contrast sources
+    SEQUENCE = "sequence"        # Sequential narrative
+    TIMELINE = "timeline"        # Chronological story
+
 class BlogPost(BaseModel):
     title: str
     content: str
@@ -203,3 +209,18 @@ class ValidationRules:
                 issues.append(f"Hashtag '{hashtag}' is too long")
                 
         return issues
+
+# Multi-File Processing Models
+class MultiSourceContent(BaseModel):
+    """Content aggregated from multiple sources"""
+    sources: List[Any] = Field(default_factory=list)  # List[ProcessedContent] - using Any to avoid circular import
+    aggregation_strategy: AggregationStrategy
+    cross_references: Dict[str, List[str]] = Field(default_factory=dict)
+    unified_insights: List[str] = Field(default_factory=list)
+    source_relationships: Dict[str, str] = Field(default_factory=dict)
+
+class AggregatedBlogGenerationState(BlogGenerationState):
+    """Extended state for multi-source blog generation"""
+    multi_source_content: Optional[MultiSourceContent] = None
+    source_weights: Dict[str, float] = Field(default_factory=dict)
+    aggregation_strategy: AggregationStrategy = AggregationStrategy.SYNTHESIS

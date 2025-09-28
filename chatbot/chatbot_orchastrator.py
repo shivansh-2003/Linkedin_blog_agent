@@ -18,8 +18,9 @@ from chatbot.intent_recognition import ContextualIntentRecognizer
 # Import ingestion and blog generation systems
 try:
     from ingestion.unified_processor import UnifiedProcessor
+    from ingestion.multi_file_processor import MultiFileProcessor
     from blog_generation.workflow import BlogGenerationWorkflow
-    from blog_generation.config import BlogGenerationState, HumanFeedback
+    from blog_generation.config import BlogGenerationState, HumanFeedback, AggregatedBlogGenerationState, AggregationStrategy
     SYSTEMS_AVAILABLE = True
 except ImportError as e:
     print(f"Warning: Core systems not available: {e}")
@@ -38,9 +39,11 @@ class ChatbotOrchestrator:
         # Initialize processing systems
         if SYSTEMS_AVAILABLE:
             self.ingestion_processor = UnifiedProcessor()
+            self.multi_file_processor = MultiFileProcessor()
             self.blog_workflow = BlogGenerationWorkflow()
         else:
             self.ingestion_processor = None
+            self.multi_file_processor = None
             self.blog_workflow = None
             print("⚠️  Running in limited mode - ingestion and blog generation unavailable")
         
@@ -169,6 +172,95 @@ class ChatbotOrchestrator:
         except Exception as e:
             self._update_stage(ChatStage.ERROR)
             return self._get_response_template("error").format(error=str(e))
+
+    async def _handle_multi_file_upload(self, intent: UserIntent, user_input: str, file_paths: List[str] = None) -> str:
+        """Handle multiple file upload and aggregation"""
+        
+        if not SYSTEMS_AVAILABLE:
+            return "Multi-file processing is not available in this mode. Please provide text content directly."
+        
+        # Determine file paths
+        target_files = file_paths or intent.entities.get("file_paths", [])
+        
+        if not target_files:
+            self._update_stage(ChatStage.AWAITING_INPUT)
+            return "Please provide multiple files for aggregation. You can upload 2-10 files to create a comprehensive LinkedIn post."
+        
+        if len(target_files) < 2:
+            return "Multi-file processing requires at least 2 files. Please provide more files or use single file processing."
+        
+        if len(target_files) > 10:
+            return "Too many files! Please provide 2-10 files for optimal processing."
+        
+        # Check if all files exist
+        missing_files = [f for f in target_files if not os.path.exists(f)]
+        if missing_files:
+            return f"I couldn't find these files: {', '.join(missing_files)}. Please check the paths and try again."
+        
+        # Update stage and process files
+        self._update_stage(ChatStage.PROCESSING_FILE)
+        
+        # Show processing message
+        filenames = [Path(f).name for f in target_files]
+        file_types = [Path(f).suffix[1:].upper() for f in target_files]
+        
+        processing_msg = f"📁 Processing {len(target_files)} files for aggregation:\n"
+        for i, (filename, file_type) in enumerate(zip(filenames, file_types), 1):
+            processing_msg += f"   {i}. {filename} ({file_type})\n"
+        
+        # Determine aggregation strategy from user input
+        strategy = self._detect_aggregation_strategy(user_input)
+        
+        # Process files through multi-file processor
+        try:
+            multi_source_content = await self.multi_file_processor.process_multiple_files(
+                target_files, 
+                strategy
+            )
+            
+            # Update blog context with multi-source information
+            blog_context = BlogContext(
+                source_file_path=", ".join(target_files),
+                source_content="",  # Will be populated from multi_source_content
+                ai_analysis=f"Multi-source analysis using {strategy.value} strategy",
+                key_insights=multi_source_content.unified_insights
+            )
+            
+            # Store multi-source content in memory for later use
+            self.memory.conversation_state.blog_context = blog_context
+            self.memory.conversation_state.metadata["multi_source_content"] = multi_source_content
+            self.memory.conversation_state.metadata["aggregation_strategy"] = strategy.value
+            
+            # Show processing complete message
+            complete_msg = f"✅ Multi-file processing complete!\n"
+            complete_msg += f"   📊 Strategy: {strategy.value}\n"
+            complete_msg += f"   📝 Sources: {len(multi_source_content.sources)}\n"
+            complete_msg += f"   🔗 Cross-references: {len(multi_source_content.cross_references)}\n"
+            complete_msg += f"   💡 Unified insights: {len(multi_source_content.unified_insights)}\n"
+            
+            # Automatically start blog generation
+            self._update_stage(ChatStage.GENERATING_BLOG)
+            blog_response = await self._generate_initial_blog()
+            
+            return f"{processing_msg}\n{complete_msg}\n\n{blog_response}"
+            
+        except Exception as e:
+            self._update_stage(ChatStage.ERROR)
+            return self._get_response_template("error").format(error=str(e))
+
+    def _detect_aggregation_strategy(self, user_input: str) -> AggregationStrategy:
+        """Detect aggregation strategy from user input"""
+        
+        user_input_lower = user_input.lower()
+        
+        if any(word in user_input_lower for word in ["compare", "comparison", "versus", "vs", "contrast"]):
+            return AggregationStrategy.COMPARISON
+        elif any(word in user_input_lower for word in ["sequence", "step", "process", "journey", "flow"]):
+            return AggregationStrategy.SEQUENCE
+        elif any(word in user_input_lower for word in ["timeline", "chronological", "evolution", "history", "over time"]):
+            return AggregationStrategy.TIMELINE
+        else:
+            return AggregationStrategy.SYNTHESIS  # Default strategy
     
     async def _handle_start_blog(self, intent: UserIntent, user_input: str, file_path: str = None) -> str:
         """Handle request to start blog creation"""

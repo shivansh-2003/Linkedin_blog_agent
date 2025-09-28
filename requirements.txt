@@ -52,3 +52,8 @@ langsmith
 # Streamlit web application framework
 streamlit
 streamlit-chat
+
+# Testing framework
+pytest
+pytest-asyncio
+pytest-cov

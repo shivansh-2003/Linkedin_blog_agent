@@ -7,7 +7,8 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from langsmith_config import trace_step, langsmith_client
 from blog_generation.config import (
     BlogGenerationState, BlogPost, CritiqueResult, HumanFeedback,
-    ProcessingStatus, BlogQuality, BlogConfig
+    ProcessingStatus, BlogQuality, BlogConfig, AggregatedBlogGenerationState,
+    AggregationStrategy, MultiSourceContent
 )
 from blog_generation.blog_generator import BlogGeneratorAgent
 from blog_generation.critique_agent import CritiqueAgent
@@ -100,7 +101,7 @@ class BlogGenerationWorkflow:
     # ===== NODE IMPLEMENTATIONS =====
     
     @trace_step("blog_generation", "llm")
-    def generate_content_node(self, state: BlogGenerationState) -> dict:
+    def generate_content_node(self, state) -> dict:
         """
         Generate blog content with detailed tracing
         
@@ -109,8 +110,18 @@ class BlogGenerationWorkflow:
         - Model response quality
         - Parsing success/failure
         - Generation time
+        - Multi-source vs single-source handling
         """
         print(f"\n🤖 === GENERATE CONTENT NODE (Iteration {state.iteration_count + 1}) ===")
+        
+        # Check if this is a multi-source state
+        is_multi_source = isinstance(state, AggregatedBlogGenerationState) and state.multi_source_content
+        
+        if is_multi_source:
+            print(f"📚 Multi-source generation using {state.aggregation_strategy.value} strategy")
+            print(f"   Sources: {len(state.multi_source_content.sources)}")
+            print(f"   Content types: {set(s.content_type.value for s in state.multi_source_content.sources)}")
+        
         try:
             state.current_status = ProcessingStatus.GENERATING
             state.iteration_count += 1
@@ -140,9 +151,17 @@ class BlogGenerationWorkflow:
                 "current_status": ProcessingStatus.FAILED,
             }
     
-    def critique_content_node(self, state: BlogGenerationState) -> dict:
+    @trace_step("blog_critique", "llm")
+    def critique_content_node(self, state) -> dict:
         """Critique generated content for quality and engagement"""
         print(f"\n🔍 === CRITIQUE CONTENT NODE ===")
+        
+        # Check if this is a multi-source state
+        is_multi_source = isinstance(state, AggregatedBlogGenerationState) and state.multi_source_content
+        
+        if is_multi_source:
+            print(f"📚 Multi-source critique for {state.aggregation_strategy.value} strategy")
+        
         try:
             if not state.current_blog:
                 return {
@@ -152,6 +171,11 @@ class BlogGenerationWorkflow:
                 }
             state.current_status = ProcessingStatus.CRITIQUING
             context = f"Iteration {state.iteration_count}, Previous score: {state.latest_critique.quality_score if state.latest_critique else 'N/A'}"
+            
+            # Pass multi-source context if available
+            if is_multi_source:
+                context += f", Multi-source ({len(state.multi_source_content.sources)} sources, {state.aggregation_strategy.value} strategy)"
+            
             critique, error = self.critic.critique_blog(state.current_blog, context)
             if critique:
                 state.latest_critique = critique
@@ -176,9 +200,16 @@ class BlogGenerationWorkflow:
                 "current_status": ProcessingStatus.FAILED,
             }
     
-    def refine_content_node(self, state: BlogGenerationState) -> dict:
+    def refine_content_node(self, state) -> dict:
         """Refine content based on critique feedback"""
         print(f"\n🔧 === REFINE CONTENT NODE ===")
+        
+        # Check if this is a multi-source state
+        is_multi_source = isinstance(state, AggregatedBlogGenerationState) and state.multi_source_content
+        
+        if is_multi_source:
+            print(f"📚 Multi-source refinement for {state.aggregation_strategy.value} strategy")
+        
         try:
             if not state.current_blog or not state.latest_critique:
                 return {
@@ -188,6 +219,12 @@ class BlogGenerationWorkflow:
                 }
             state.current_status = ProcessingStatus.REFINING
             focus_areas = self._extract_focus_areas(state.latest_critique)
+            
+            # Add multi-source context to focus areas if available
+            if is_multi_source:
+                focus_areas.append(f"Multi-source integration ({state.aggregation_strategy.value} strategy)")
+                focus_areas.append(f"Source balance across {len(state.multi_source_content.sources)} files")
+            
             refined_post, error = self.refiner.refine_blog(
                 original_post=state.current_blog,
                 critique=state.latest_critique,

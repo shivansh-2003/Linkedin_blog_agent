@@ -358,3 +358,156 @@ REVISION INSTRUCTIONS:
 6. Ensure changes align with LinkedIn best practices
 
 OUTPUT FORMAT: Valid JSON only, matching BlogPost schema exactly. No additional text."""
+
+# ============================================================================
+# MULTI-SOURCE BLOG GENERATION PROMPTS
+# ============================================================================
+
+MULTI_SOURCE_SYSTEM_PROMPT = """You are a LinkedIn content strategist specializing in synthesizing insights from multiple sources into cohesive, engaging posts.
+
+Your expertise includes:
+- Connecting insights across different content types (documents, presentations, code, images)
+- Creating unified narratives from diverse sources
+- Highlighting cross-references and relationships between sources
+- Maintaining source attribution while creating smooth flow
+- Adapting content strategy based on aggregation approach (synthesis, comparison, sequence, timeline)
+
+Always create content that feels unified, not like a collection of separate summaries. The goal is to create a single, compelling LinkedIn post that leverages the collective wisdom of all sources."""
+
+def build_multi_source_prompt(
+    multi_source_content,
+    user_requirements: str = ""
+) -> str:
+    """Build prompt for multi-source blog generation"""
+    
+    # Summarize sources
+    sources_summary = []
+    for i, source in enumerate(multi_source_content.sources):
+        sources_summary.append(f"""
+Source {i+1} ({source.content_type.value}): {source.source_file}
+Key insights: {', '.join(source.key_insights[:3])}
+Analysis: {source.ai_analysis[:200]}...
+""")
+    
+    # Format unified insights
+    unified_insights_text = '\n'.join(f"• {insight}" for insight in multi_source_content.unified_insights)
+    
+    strategy_instructions = {
+        "synthesis": "Blend all insights into a unified narrative that shows how the sources complement each other. Create a cohesive story that weaves together the best elements from each source.",
+        "comparison": "Compare and contrast the sources, highlighting similarities, differences, and complementary perspectives. Show how different approaches or viewpoints contribute to a complete picture.",
+        "sequence": "Create a sequential story that flows logically from one source to the next. Build a narrative arc that takes readers through a journey or process.",
+        "timeline": "Present insights in chronological order, showing evolution or progression over time. Highlight how things have changed or developed across the sources."
+    }
+    
+    strategy_instruction = strategy_instructions.get(
+        multi_source_content.aggregation_strategy.value,
+        "Synthesize the sources effectively."
+    )
+    
+    # Format cross-references
+    cross_refs_text = ""
+    if multi_source_content.cross_references:
+        cross_refs_text = "\nCROSS-REFERENCES:\n"
+        for source_id, related_sources in multi_source_content.cross_references.items():
+            if related_sources:
+                cross_refs_text += f"• {source_id} relates to: {', '.join(related_sources)}\n"
+    
+    return f"""Create a LinkedIn post from multiple sources using {multi_source_content.aggregation_strategy.value} strategy.
+
+SOURCES:
+{''.join(sources_summary)}
+
+UNIFIED INSIGHTS:
+{unified_insights_text}
+{cross_refs_text}
+
+STRATEGY: {strategy_instruction}
+
+REQUIREMENTS:
+{user_requirements}
+
+Create a cohesive LinkedIn post that:
+1. Seamlessly integrates insights from all sources
+2. Maintains natural flow (not just a list of separate points)
+3. Shows relationships between different sources
+4. Provides clear value to professional audience
+5. Includes engaging hook and strong call-to-action
+6. Uses 5-8 relevant hashtags
+7. Adapts tone and structure to the aggregation strategy
+
+OUTPUT FORMAT: Valid JSON matching BlogPost schema."""
+
+def build_multi_source_critique_prompt(
+    blog_post,
+    multi_source_content,
+    previous_critique: str = ""
+) -> str:
+    """Build critique prompt for multi-source blog posts"""
+    
+    sources_count = len(multi_source_content.sources)
+    strategy = multi_source_content.aggregation_strategy.value
+    
+    return f"""Critique this LinkedIn post generated from {sources_count} sources using {strategy} strategy.
+
+BLOG POST:
+Title: {blog_post.title}
+Content: {blog_post.content}
+Hashtags: {', '.join(blog_post.hashtags)}
+
+SOURCE DIVERSITY:
+- Total sources: {sources_count}
+- Content types: {', '.join(set(s.content_type.value for s in multi_source_content.sources))}
+- Strategy used: {strategy}
+
+UNIFIED INSIGHTS COVERED:
+{chr(10).join(f"• {insight}" for insight in multi_source_content.unified_insights[:5])}
+
+PREVIOUS CRITIQUE: {previous_critique}
+
+EVALUATION CRITERIA:
+1. **Source Integration**: Does the post effectively blend insights from all sources?
+2. **Strategy Alignment**: Does the content match the {strategy} approach?
+3. **Coherence**: Does it read as a unified post, not separate summaries?
+4. **Value**: Does it provide clear professional value?
+5. **Engagement**: Will it drive LinkedIn engagement?
+6. **Cross-References**: Are relationships between sources clear?
+
+OUTPUT FORMAT: Valid JSON matching CritiqueResult schema."""
+
+def build_multi_source_refinement_prompt(
+    blog_post,
+    critique_result,
+    multi_source_content,
+    user_feedback: str = ""
+) -> str:
+    """Build refinement prompt for multi-source blog posts"""
+    
+    strategy = multi_source_content.aggregation_strategy.value
+    sources_summary = f"{len(multi_source_content.sources)} sources ({', '.join(set(s.content_type.value for s in multi_source_content.sources))})"
+    
+    return f"""Refine this LinkedIn post generated from {sources_summary} using {strategy} strategy.
+
+CURRENT POST:
+Title: {blog_post.title}
+Content: {blog_post.content}
+Hashtags: {', '.join(blog_post.hashtags)}
+
+CRITIQUE FEEDBACK:
+Quality Score: {critique_result.quality_score}/10
+Quality Level: {critique_result.quality_level}
+Strengths: {', '.join(critique_result.strengths[:3])}
+Areas for Improvement: {', '.join(critique_result.areas_for_improvement[:3])}
+
+USER FEEDBACK: {user_feedback}
+
+REFINEMENT FOCUS:
+1. **Source Balance**: Ensure all sources contribute meaningfully
+2. **Strategy Consistency**: Maintain {strategy} approach throughout
+3. **Flow Improvement**: Create smoother transitions between source insights
+4. **Engagement Enhancement**: Strengthen hook and call-to-action
+5. **LinkedIn Optimization**: Optimize for platform best practices
+
+UNIFIED INSIGHTS TO PRESERVE:
+{chr(10).join(f"• {insight}" for insight in multi_source_content.unified_insights[:5])}
+
+OUTPUT FORMAT: Valid JSON matching BlogPost schema."""

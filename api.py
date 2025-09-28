@@ -43,6 +43,10 @@ from chatbot.chatbot_orchastrator import ChatbotOrchestrator
 from chatbot.config import ChatStage, MessageType, ChatMessage
 from chatbot.conversation_memory import ConversationMemoryManager
 
+# Import multi-file processing modules
+from ingestion.multi_file_processor import MultiFileProcessor
+from blog_generation.config import AggregationStrategy, AggregatedBlogGenerationState
+
 # Helper to make nested structures JSON-safe (e.g., remove bytes)
 def _sanitize_for_json(obj):
     if isinstance(obj, dict):
@@ -110,9 +114,10 @@ app = FastAPI(title="LinkedIn Blog AI Assistant", version="2.0.0")
 ingestion_processor = UnifiedProcessor()
 blog_workflow = BlogGenerationWorkflow()
 
-# Initialize chatbot orchestrator for single-user session management
-chatbot_orchestrator = ChatbotOrchestrator()
-memory_manager = ConversationMemoryManager()
+# Note: ChatbotOrchestrator and ConversationMemoryManager will be created per session, not globally
+
+# Initialize multi-file processor
+multi_file_processor = MultiFileProcessor()
 
 # Simple session storage for single-user focus
 active_sessions: Dict[str, Dict[str, Any]] = {}
@@ -307,6 +312,115 @@ async def generate_blog_from_file(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Blog generation from file failed: {str(e)}")
 
+@app.post("/api/aggregate", response_model=BlogResponse)
+@trace_step("api_multi_file_aggregation", "workflow")
+async def aggregate_multiple_files(
+    files: List[UploadFile] = File(...),
+    aggregation_strategy: str = Form("synthesis"),
+    target_audience: str = Form("General professional audience"),
+    tone: str = Form("Professional and engaging"),
+    max_iterations: int = Form(3)
+):
+    """
+    Aggregate multiple files into a single cohesive LinkedIn post
+    
+    Strategies:
+    - synthesis: Blend insights from all files into unified narrative
+    - comparison: Compare/contrast findings across files  
+    - sequence: Create sequential story from multiple sources
+    - timeline: Chronological narrative from multiple sources
+    """
+    try:
+        if len(files) < 2:
+            raise HTTPException(status_code=400, detail="At least 2 files are required for aggregation")
+        
+        if len(files) > 10:
+            raise HTTPException(status_code=400, detail="Maximum 10 files allowed for aggregation")
+        
+        # Validate aggregation strategy
+        try:
+            strategy = AggregationStrategy(aggregation_strategy)
+        except ValueError:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Invalid aggregation strategy. Must be one of: {[s.value for s in AggregationStrategy]}"
+            )
+        
+        # Save uploaded files temporarily
+        temp_files = []
+        try:
+            for file in files:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.filename).suffix) as tmp_file:
+                    shutil.copyfileobj(file.file, tmp_file)
+                    temp_files.append(tmp_file.name)
+            
+            # Process multiple files through multi-file processor
+            multi_source_content = await multi_file_processor.process_multiple_files(
+                temp_files, 
+                strategy
+            )
+            
+            # Create aggregated blog generation state
+            initial_state = AggregatedBlogGenerationState(
+                source_content="",  # Will be populated from multi_source_content
+                user_requirements=f"Target audience: {target_audience}, Tone: {tone}",
+                max_iterations=max_iterations,
+                current_status=ProcessingStatus.GENERATING,
+                multi_source_content=multi_source_content,
+                aggregation_strategy=strategy
+            )
+            
+            # Run the blog generation workflow with multi-source content
+            result_state = blog_workflow.run_workflow(initial_state)
+            
+            # Prepare response
+            quality_score = None
+            if result_state.latest_critique:
+                quality_score = result_state.latest_critique.quality_score
+            elif result_state.critique_history:
+                quality_score = result_state.critique_history[-1].quality_score
+            
+            response = BlogResponse(
+                success=result_state.current_status == ProcessingStatus.COMPLETED,
+                workflow_status=result_state.current_status.value,
+                iterations=result_state.iteration_count,
+                quality_score=quality_score
+            )
+            
+            if result_state.final_blog:
+                response.blog_post = {
+                    "title": result_state.final_blog.title,
+                    "hook": result_state.final_blog.hook,
+                    "content": result_state.final_blog.content,
+                    "call_to_action": result_state.final_blog.call_to_action,
+                    "hashtags": result_state.final_blog.hashtags,
+                    "target_audience": result_state.final_blog.target_audience,
+                    "engagement_score": result_state.final_blog.estimated_engagement_score,
+                    "aggregation_strategy": strategy.value,
+                    "source_count": len(multi_source_content.sources),
+                    "source_types": list(set(s.content_type.value for s in multi_source_content.sources)),
+                    "unified_insights": multi_source_content.unified_insights[:5],  # Top 5 insights
+                    "cross_references": multi_source_content.cross_references
+                }
+            
+            if result_state.last_error:
+                response.error = result_state.last_error
+                
+            return response
+            
+        finally:
+            # Clean up temporary files
+            for temp_file in temp_files:
+                try:
+                    os.unlink(temp_file)
+                except:
+                    pass  # Ignore cleanup errors
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Multi-file aggregation failed: {str(e)}")
+
 # ============================================================================
 # CHATBOT API ENDPOINTS - Single User Session Management
 # ============================================================================
@@ -376,7 +490,8 @@ async def send_chat_message(request: ChatMessageRequest):
         
         session_data = active_sessions[session_id]
         
-        # Process message through chatbot orchestrator
+        # Process message through chatbot orchestrator (create per session)
+        chatbot_orchestrator = ChatbotOrchestrator(session_id)
         response = await chatbot_orchestrator.process_user_input(request.message)
         
         # Update session data
@@ -385,14 +500,15 @@ async def send_chat_message(request: ChatMessageRequest):
         
         # Get blog context if available
         blog_context = None
-        if chatbot_orchestrator.current_blog_context:
+        memory_blog_context = chatbot_orchestrator.memory.get_blog_context()
+        if memory_blog_context:
             blog_context = {
-                "source_content": chatbot_orchestrator.current_blog_context.source_content,
-                "ai_analysis": chatbot_orchestrator.current_blog_context.ai_analysis,
-                "key_insights": chatbot_orchestrator.current_blog_context.key_insights,
-                "current_draft": chatbot_orchestrator.current_blog_context.current_draft,
-                "user_requirements": chatbot_orchestrator.current_blog_context.user_requirements,
-                "feedback_history": chatbot_orchestrator.current_blog_context.feedback_history
+                "source_content": memory_blog_context.source_content,
+                "ai_analysis": memory_blog_context.ai_analysis,
+                "key_insights": memory_blog_context.key_insights,
+                "current_draft": memory_blog_context.current_draft,
+                "user_requirements": memory_blog_context.user_requirements,
+                "feedback_history": memory_blog_context.feedback_history
             }
             session_data["blog_context"] = blog_context
         
@@ -420,7 +536,8 @@ async def get_chat_history(session_id: str):
         
         session_data = active_sessions[session_id]
         
-        # Get conversation history from memory manager
+        # Get conversation history from memory manager (create per session)
+        memory_manager = ConversationMemoryManager(session_id)
         conversation_state = memory_manager.get_conversation_state(session_id)
         
         messages = []
@@ -459,7 +576,8 @@ async def submit_feedback(request: FeedbackRequest):
         
         session_data = active_sessions[session_id]
         
-        # Process feedback through chatbot
+        # Process feedback through chatbot (create per session)
+        chatbot_orchestrator = ChatbotOrchestrator(session_id)
         feedback_message = f"User feedback ({request.feedback_type}): {request.feedback}"
         response = await chatbot_orchestrator.process_user_input(feedback_message)
         
@@ -469,14 +587,15 @@ async def submit_feedback(request: FeedbackRequest):
         
         # Update blog context
         blog_context = None
-        if chatbot_orchestrator.current_blog_context:
+        memory_blog_context = chatbot_orchestrator.memory.get_blog_context()
+        if memory_blog_context:
             blog_context = {
-                "source_content": chatbot_orchestrator.current_blog_context.source_content,
-                "ai_analysis": chatbot_orchestrator.current_blog_context.ai_analysis,
-                "key_insights": chatbot_orchestrator.current_blog_context.key_insights,
-                "current_draft": chatbot_orchestrator.current_blog_context.current_draft,
-                "user_requirements": chatbot_orchestrator.current_blog_context.user_requirements,
-                "feedback_history": chatbot_orchestrator.current_blog_context.feedback_history
+                "source_content": memory_blog_context.source_content,
+                "ai_analysis": memory_blog_context.ai_analysis,
+                "key_insights": memory_blog_context.key_insights,
+                "current_draft": memory_blog_context.current_draft,
+                "user_requirements": memory_blog_context.user_requirements,
+                "feedback_history": memory_blog_context.feedback_history
             }
             session_data["blog_context"] = blog_context
         
@@ -506,7 +625,8 @@ async def approve_blog_draft(request: ApprovalRequest):
         
         session_data = active_sessions[session_id]
         
-        # Process approval/rejection
+        # Process approval/rejection (create per session)
+        chatbot_orchestrator = ChatbotOrchestrator(session_id)
         if request.approved:
             approval_message = f"APPROVE: {request.final_notes or 'Blog draft approved'}"
         else:
@@ -520,14 +640,15 @@ async def approve_blog_draft(request: ApprovalRequest):
         
         # Update blog context
         blog_context = None
-        if chatbot_orchestrator.current_blog_context:
+        memory_blog_context = chatbot_orchestrator.memory.get_blog_context()
+        if memory_blog_context:
             blog_context = {
-                "source_content": chatbot_orchestrator.current_blog_context.source_content,
-                "ai_analysis": chatbot_orchestrator.current_blog_context.ai_analysis,
-                "key_insights": chatbot_orchestrator.current_blog_context.key_insights,
-                "current_draft": chatbot_orchestrator.current_blog_context.current_draft,
-                "user_requirements": chatbot_orchestrator.current_blog_context.user_requirements,
-                "feedback_history": chatbot_orchestrator.current_blog_context.feedback_history
+                "source_content": memory_blog_context.source_content,
+                "ai_analysis": memory_blog_context.ai_analysis,
+                "key_insights": memory_blog_context.key_insights,
+                "current_draft": memory_blog_context.current_draft,
+                "user_requirements": memory_blog_context.user_requirements,
+                "feedback_history": memory_blog_context.feedback_history
             }
             session_data["blog_context"] = blog_context
         
@@ -558,6 +679,7 @@ async def delete_chat_session(session_id: str):
         
         # Clean up memory manager session
         try:
+            memory_manager = ConversationMemoryManager(session_id)
             memory_manager.cleanup_session(session_id)
         except:
             pass  # Ignore cleanup errors
@@ -603,6 +725,7 @@ async def root():
             "ingest": "/api/ingest - Process files through ingestion pipeline",
             "generate_blog_text": "/api/generate-blog - Generate blog from text input",
             "generate_blog_file": "/api/generate-blog-from-file - Generate blog from uploaded file",
+            "aggregate_files": "/api/aggregate - Aggregate multiple files into cohesive LinkedIn post",
             "chat_start": "/api/chat/start - Start new chat session",
             "chat_message": "/api/chat/message - Send message to chatbot",
             "chat_history": "/api/chat/history/{session_id} - Get conversation history",
@@ -616,6 +739,7 @@ async def root():
         "features": {
             "file_processing": "PDF, Word, PPT, Code, Text, Image",
             "blog_generation": "LangGraph-powered Generate → Critique → Refine workflow",
+            "multi_file_aggregation": "Synthesize insights from multiple sources (synthesis, comparison, sequence, timeline)",
             "quality_scoring": "Automated quality assessment and improvement",
             "chatbot": "Single-user conversational interface for LinkedIn post improvement",
             "session_management": "Simple session-based conversation history",
@@ -632,6 +756,7 @@ async def health_check():
         "ingestion_ready": True,
         "blog_generation_ready": True,
         "chatbot_ready": True,
+        "multi_file_processing_ready": True,
         "active_sessions": len(active_sessions),
         "version": "2.0.0"
     }
