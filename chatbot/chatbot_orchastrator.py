@@ -271,11 +271,18 @@ class ChatbotOrchestrator:
         blog_context = self.memory.get_blog_context()
         
         if not blog_context or not blog_context.source_content:
-            # No source content available
-            self._update_stage(ChatStage.AWAITING_INPUT)
-            return "I'd be happy to help you create a LinkedIn post! " + self._get_response_template("ask_for_input")
+            # Use the user input as source content for blog generation
+            print(f"📝 Using user input as source content for blog generation")
+            self.memory.store_blog_context(
+                source_content=user_input,
+                user_requirements=user_input,
+                ai_analysis="User-provided text input for LinkedIn post creation"
+            )
+            # Generate blog directly from user text
+            self._update_stage(ChatStage.GENERATING_BLOG)
+            return await self._generate_initial_blog()
         
-        # Ask for any specific requirements
+        # Ask for any specific requirements if we already have content
         if not blog_context.user_requirements:
             blog_context.user_requirements = user_input
             self.memory.update_blog_context(blog_context)
