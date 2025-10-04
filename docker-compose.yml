@@ -1,0 +1,89 @@
+# docker-compose.yml - Development environment
+
+version: '3.8'
+
+services:
+  # Main API Service
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: blog-api
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - LANGSMITH_TRACING=${LANGSMITH_TRACING:-false}
+      - LANGSMITH_PROJECT=linkedin-blog-agent
+    volumes:
+      # Bind mounts for development (live code updates)
+      - ./chatbot_sessions:/app/chatbot_sessions
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./input:/app/input
+    networks:
+      - blog-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+  # Ingestion Worker (for heavy file processing)
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: blog-ingestion
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - WORKER_TYPE=ingestion
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+      - ./input:/app/input
+    networks:
+      - blog-network
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+  # Blog Generation Worker (for AI workflows)
+  blog-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: blog-generator
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY:-}
+      - WORKER_TYPE=blog_generation
+    volumes:
+      - ./output:/app/output
+      - ./logs:/app/logs
+    networks:
+      - blog-network
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+
+# Shared network for inter-service communication
+networks:
+  blog-network:
+    driver: bridge
+
+# Named volumes (optional - for production)
+volumes:
+  session-data:
+    driver: local
+  output-data:
+    driver: local
+  log-data:
+    driver: local

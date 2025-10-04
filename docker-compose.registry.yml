@@ -1,0 +1,57 @@
+# docker-compose.registry.yml - With private Docker registry
+
+version: '3.8'
+
+services:
+  # Main API
+  api:
+    image: localhost:5000/linkedin-blog-assistant:latest
+    container_name: blog-api
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    volumes:
+      - session-data:/app/chatbot_sessions
+      - output-data:/app/output
+    networks:
+      - blog-network
+    restart: unless-stopped
+
+  # Private Docker Registry
+  registry:
+    image: registry:2
+    container_name: docker-registry
+    ports:
+      - "5000:5000"
+    volumes:
+      - registry-data:/var/lib/registry
+    networks:
+      - blog-network
+    restart: always
+
+  # Registry Web UI
+  registry-ui:
+    image: joxit/docker-registry-ui:latest
+    container_name: registry-ui
+    ports:
+      - "8080:80"
+    environment:
+      - REGISTRY_TITLE=LinkedIn Blog Registry
+      - REGISTRY_URL=http://registry:5000
+      - SINGLE_REGISTRY=true
+    depends_on:
+      - registry
+    networks:
+      - blog-network
+    restart: always
+
+volumes:
+  session-data:
+  output-data:
+  registry-data:
+
+networks:
+  blog-network:
+    driver: bridge

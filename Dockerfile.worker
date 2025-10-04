@@ -1,0 +1,23 @@
+# Dockerfile.worker - Background processing container
+
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy only necessary modules
+COPY ingestion/ ./ingestion/
+COPY blog_generation/ ./blog_generation/
+COPY chatbot/ ./chatbot/
+COPY shared/ ./shared/
+COPY langsmith_config.py .
+COPY worker.py .
+
+# Create directories
+RUN mkdir -p /app/output /app/logs /app/input
+
+# Run worker
+CMD ["python", "worker.py"]

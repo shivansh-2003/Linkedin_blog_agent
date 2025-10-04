@@ -1,0 +1,62 @@
+# docker-compose.prod.yml - Production deployment
+
+version: '3.8'
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.production
+    image: linkedin-blog-assistant:latest
+    container_name: blog-api-prod
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - LANGSMITH_API_KEY=${LANGSMITH_API_KEY}
+      - LANGSMITH_TRACING=true
+    volumes:
+      - session-data:/app/chatbot_sessions
+      - output-data:/app/output
+      - log-data:/app/logs
+    networks:
+      - blog-network
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '1.0'
+          memory: 1G
+    restart: always
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Nginx reverse proxy
+  nginx:
+    image: nginx:alpine
+    container_name: blog-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+    networks:
+      - blog-network
+    restart: always
+
+volumes:
+  session-data:
+  output-data:
+  log-data:
+
+networks:
+  blog-network:
+    driver: bridge
