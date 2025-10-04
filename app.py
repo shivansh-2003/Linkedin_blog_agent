@@ -164,6 +164,30 @@ st.markdown("""
     .engagement-button:hover {
         background-color: var(--linkedin-gray-1);
     }
+    
+    /* Smooth scrolling for chat */
+    .stChatFloatingInputContainer {
+        bottom: 20px;
+        background-color: white;
+        border-top: 1px solid #e0e0e0;
+        padding: 1rem;
+    }
+    
+    /* Chat input styling */
+    .stChatInput > div {
+        border-radius: 24px !important;
+        border: 2px solid #0A66C2 !important;
+    }
+    
+    /* Message animations */
+    .stChatMessage {
+        animation: fadeIn 0.3s ease-in;
+    }
+    
+    @keyframes fadeIn {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -176,6 +200,10 @@ if 'current_blog' not in st.session_state:
     st.session_state.current_blog = None
 if 'active_tab' not in st.session_state:
     st.session_state.active_tab = "🏠 Home"
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
+if 'chat_input_key' not in st.session_state:
+    st.session_state.chat_input_key = 0
 
 # Helper functions
 def make_api_request(endpoint, method="GET", data=None, files=None):
@@ -530,106 +558,200 @@ Target Audience: {blog_post.get('target_audience', '')}
 
 with tab3:
     st.markdown("## 💬 Conversational Blog Assistant")
-    st.write("Chat with the AI to create and refine your LinkedIn posts")
     
-    # Session management
-    col1, col2, col3 = st.columns([2, 1, 1])
+    # Top bar with session controls
+    col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
         if st.session_state.session_id:
-            st.success(f"📌 Session: {st.session_state.session_id[:8]}...")
+            st.success(f"🟢 Active Session: `{st.session_state.session_id[:8]}...`")
         else:
-            st.info("No active session")
+            st.info("🔵 No active session - Starting new session...")
     
     with col2:
-        if st.button("🆕 New Session"):
+        if st.button("🆕 New Session", use_container_width=True):
             result, error = make_api_request("/api/chat/start", method="POST")
             if result:
                 st.session_state.session_id = result.get('session_id')
+                st.session_state.messages = []
                 st.session_state.chat_history = []
-                st.success("New session started!")
+                st.success("✅ New session started!")
+                time.sleep(0.5)
                 st.rerun()
     
     with col3:
-        if st.button("🗑️ Clear Chat"):
+        if st.button("🗑️ Clear", use_container_width=True):
+            st.session_state.messages = []
             st.session_state.chat_history = []
             st.rerun()
     
     # Start session if needed
     if not st.session_state.session_id:
-        result, error = make_api_request("/api/chat/start", method="POST")
-        if result:
-            st.session_state.session_id = result.get('session_id')
+        with st.spinner("Initializing session..."):
+            result, error = make_api_request("/api/chat/start", method="POST")
+            if result:
+                st.session_state.session_id = result.get('session_id')
+                st.rerun()
     
-    st.markdown("---")
+    st.divider()
     
-    # Chat history display with fixed height and auto-scroll
-    chat_container = st.container(height=500)
+    # Welcome message if chat is empty
+    if len(st.session_state.messages) == 0:
+        st.markdown("""
+        <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    color: white; padding: 2rem; border-radius: 12px; margin-bottom: 1rem;'>
+            <h3 style='margin: 0; color: white;'>👋 Welcome to your LinkedIn Blog Assistant!</h3>
+            <p style='margin: 0.5rem 0 0 0; opacity: 0.9;'>
+                I can help you create amazing LinkedIn posts. Try:
+            </p>
+            <ul style='margin: 0.5rem 0 0 0; opacity: 0.9;'>
+                <li>Upload a file to analyze</li>
+                <li>Share your ideas for a blog post</li>
+                <li>Ask me to refine your content</li>
+            </ul>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    # Chat messages container with custom styling
+    st.markdown("""
+        <style>
+        .chat-container {
+            height: 500px;
+            overflow-y: auto;
+            padding: 1rem;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+        }
+        
+        .stChatMessage {
+            background-color: white;
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+        
+        .stChatMessage[data-testid="user-message"] {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            margin-left: 2rem;
+        }
+        
+        .stChatMessage[data-testid="assistant-message"] {
+            background-color: white;
+            margin-right: 2rem;
+            border-left: 4px solid #0A66C2;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Display chat messages using st.chat_message (native Streamlit)
+    chat_container = st.container()
     with chat_container:
-        for message in st.session_state.chat_history:
-            if message['role'] == 'user':
-                with st.chat_message("user"):
-                    st.write(message["content"])
-            else:
-                with st.chat_message("assistant"):
-                    st.write(message["content"])
+        for idx, msg in enumerate(st.session_state.messages):
+            with st.chat_message(msg["role"], avatar="🧑" if msg["role"] == "user" else "🤖"):
+                st.markdown(msg["content"])
     
-    # File upload in chat
-    uploaded_chat_file = st.file_uploader(
-        "Upload a file (optional)",
-        type=['pdf', 'docx', 'pptx', 'txt', 'md', 'py', 'js', 'java', 'cpp', 'jpg', 'png'],
-        key="chat_file_uploader"
+    # File upload section (collapsible)
+    with st.expander("📎 Attach a file (optional)", expanded=False):
+        uploaded_chat_file = st.file_uploader(
+            "Upload document",
+            type=['pdf', 'docx', 'pptx', 'txt', 'md', 'py', 'js', 'java', 'cpp', 'jpg', 'png'],
+            key="chat_file_uploader",
+            label_visibility="collapsed"
+        )
+        
+        if uploaded_chat_file:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.success(f"✅ {uploaded_chat_file.name}")
+            with col2:
+                file_size = uploaded_chat_file.size / 1024
+                st.caption(f"{file_size:.1f} KB")
+    
+    # Chat input at the bottom (fixed position)
+    user_message = st.chat_input(
+        "Type your message here...",
+        key=f"chat_input_{st.session_state.chat_input_key}"
     )
     
-    # Chat input with st.chat_input for better UX
-    user_message = st.chat_input("Type your message here...")
-    
+    # Process user input
     if user_message:
-        # Add user message to history
+        # Add user message
+        st.session_state.messages.append({"role": "user", "content": user_message})
         st.session_state.chat_history.append({"role": "user", "content": user_message})
         
-        # Show user message immediately
-        with st.chat_message("user"):
-            st.write(user_message)
+        # Display user message immediately
+        with st.chat_message("user", avatar="🧑"):
+            st.markdown(user_message)
         
-        # Show assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                # Prepare request
-                data = {
-                    "message": user_message,
-                    "session_id": st.session_state.session_id
-                }
+        # Show assistant thinking
+        with st.chat_message("assistant", avatar="🤖"):
+            message_placeholder = st.empty()
+            message_placeholder.markdown("💭 Thinking...")
+            
+            # Prepare request
+            data = {
+                "message": user_message,
+                "session_id": st.session_state.session_id
+            }
+            
+            # Send message
+            result, error = make_api_request("/api/chat/message", method="POST", data=data)
+            
+            if result and result.get('success'):
+                response = result.get('response', '')
                 
-                # Send message
-                result, error = make_api_request("/api/chat/message", method="POST", data=data)
+                # Simulate typing effect
+                full_response = ""
+                for chunk in response.split():
+                    full_response += chunk + " "
+                    message_placeholder.markdown(full_response + "▌")
+                    time.sleep(0.02)
                 
-                if result and result.get('success'):
-                    response = result.get('response', '')
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
-                    
-                    # Update blog context if available
-                    if result.get('blog_context'):
-                        st.session_state.current_blog = result['blog_context']
-                    
-                    st.write(response)
-                else:
-                    error_msg = f"Error: {error}"
-                    st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
-                    st.error(error_msg)
+                message_placeholder.markdown(response)
+                
+                # Add to session state
+                st.session_state.messages.append({"role": "assistant", "content": response})
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
+                
+                # Update blog context if available
+                if result.get('blog_context'):
+                    st.session_state.current_blog = result['blog_context']
+            else:
+                error_msg = f"❌ Error: {error}"
+                message_placeholder.markdown(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
+        
+        # Increment chat input key to reset it
+        st.session_state.chat_input_key += 1
+        st.rerun()
     
-    # Quick actions
+    # Current Draft Section (if available)
     if st.session_state.current_blog and st.session_state.current_blog.get('current_draft'):
-        st.markdown("---")
+        st.divider()
         st.markdown("### 📝 Current Draft")
         
         draft = st.session_state.current_blog['current_draft']
+        
+        # Draft preview in a card
+        st.markdown("""
+            <div style='background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); 
+                        padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem;'>
+                <h4 style='margin-top: 0;'>📌 Draft Preview</h4>
+            </div>
+        """, unsafe_allow_html=True)
+        
         display_blog_post(draft)
         
-        col1, col2, col3 = st.columns(3)
+        # Action buttons
+        st.markdown("#### 🎯 What would you like to do?")
+        
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
-            if st.button("✅ Approve Draft"):
+            if st.button("✅ Approve", use_container_width=True, type="primary"):
                 data = {
                     "session_id": st.session_state.session_id,
                     "approved": True,
@@ -637,20 +759,71 @@ with tab3:
                 }
                 result, error = make_api_request("/api/chat/approve", method="POST", data=data)
                 if result:
-                    st.success("Draft approved!")
+                    st.success("✅ Draft approved!")
+                    st.balloons()
+                    time.sleep(1)
                     st.rerun()
         
         with col2:
-            if st.button("🔄 Request Changes"):
-                st.session_state.feedback_mode = True
+            feedback_text = st.text_input(
+                "Feedback",
+                placeholder="e.g., Make it more casual",
+                label_visibility="collapsed"
+            )
+            if st.button("📝 Improve", use_container_width=True):
+                if feedback_text:
+                    # Send feedback as a message
+                    st.session_state.messages.append({"role": "user", "content": feedback_text})
+                    st.rerun()
+                else:
+                    st.warning("Please provide feedback first")
         
         with col3:
-            blog_text = f"{draft.get('title', '')}\n\n{draft.get('hook', '')}\n\n{draft.get('content', '')}\n\n{draft.get('call_to_action', '')}\n\n{' '.join(draft.get('hashtags', []))}"
+            # Multiple download formats
+            blog_text = f"""# {draft.get('title', '')}
+
+{draft.get('hook', '')}
+
+{draft.get('content', '')}
+
+**{draft.get('call_to_action', '')}**
+
+{' '.join(draft.get('hashtags', []))}
+"""
             st.download_button(
                 "📥 Download",
                 blog_text,
-                file_name="linkedin_post.txt"
+                file_name=f"linkedin_post_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                mime="text/markdown",
+                use_container_width=True
             )
+        
+        with col4:
+            if st.button("🔄 Regenerate", use_container_width=True):
+                st.session_state.messages.append({
+                    "role": "user", 
+                    "content": "Please regenerate this post with a different approach"
+                })
+                st.rerun()
+    
+    # Quick action suggestions
+    if len(st.session_state.messages) == 0:
+        st.markdown("#### 💡 Quick Actions")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        suggestions = [
+            ("📄 Analyze Document", "I have a document I'd like to turn into a LinkedIn post"),
+            ("✍️ Write from Scratch", "Help me write a LinkedIn post about [your topic]"),
+            ("🎯 Improve Existing", "I have a draft that needs improvement")
+        ]
+        
+        for idx, (label, prompt) in enumerate(suggestions):
+            col = [col1, col2, col3][idx]
+            with col:
+                if st.button(label, use_container_width=True, key=f"quick_{idx}"):
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.rerun()
 
 with tab4:
     st.markdown("## 📊 Multi-File Processing")
