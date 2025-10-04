@@ -114,6 +114,20 @@ class ConversationMemoryManager:
         self.conversation_state.last_updated = datetime.now()
         self._save_state()
     
+    def store_blog_context(self, source_content: str, user_requirements: str = None, ai_analysis: str = None):
+        """Store new blog context from source content"""
+        from chatbot.config import BlogContext
+        
+        blog_context = BlogContext(
+            source_content=source_content,
+            user_requirements=user_requirements or "",
+            ai_analysis=ai_analysis or ""
+        )
+        
+        self.conversation_state.blog_context = blog_context
+        self.conversation_state.last_updated = datetime.now()
+        self._save_state()
+    
     def update_blog_context(self, blog_context: BlogContext):
         """Update blog context information"""
         self.conversation_state.blog_context = blog_context
