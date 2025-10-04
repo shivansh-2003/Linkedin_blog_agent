@@ -16,73 +16,153 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better UI
+# LinkedIn-Authentic CSS
 st.markdown("""
 <style>
+    :root {
+        --linkedin-blue: #0A66C2;
+        --linkedin-dark-blue: #004182;
+        --linkedin-light-blue: #378FE9;
+        --linkedin-black: #000000;
+        --linkedin-gray-1: #F3F2EF;
+        --linkedin-gray-2: #E7E5DF;
+        --linkedin-success: #057642;
+        --linkedin-warning: #915907;
+        --linkedin-error: #CC1016;
+    }
+    
     .main-header {
         font-size: 2.5rem;
         font-weight: bold;
-        color: #0A66C2;
+        color: var(--linkedin-blue);
         text-align: center;
         margin-bottom: 1rem;
     }
+    
     .sub-header {
         font-size: 1.2rem;
         color: #666;
         text-align: center;
         margin-bottom: 2rem;
     }
+    
     .blog-card {
-        background-color: #f8f9fa;
-        padding: 1.5rem;
-        border-radius: 10px;
-        border-left: 4px solid #0A66C2;
+        background: white;
+        border: 1px solid var(--linkedin-gray-2);
+        border-radius: 8px;
+        padding: 20px;
+        box-shadow: 0 0 0 1px rgba(0,0,0,0.08);
+        transition: box-shadow 0.2s;
         margin: 1rem 0;
     }
+    
+    .blog-card:hover {
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+    }
+    
     .quality-score {
         font-size: 1.5rem;
         font-weight: bold;
-        color: #0A66C2;
+        color: var(--linkedin-blue);
     }
+    
     .success-message {
         background-color: #d4edda;
         border-color: #c3e6cb;
         color: #155724;
         padding: 1rem;
-        border-radius: 5px;
+        border-radius: 8px;
         margin: 1rem 0;
+        border-left: 4px solid var(--linkedin-success);
     }
+    
     .error-message {
         background-color: #f8d7da;
         border-color: #f5c6cb;
         color: #721c24;
         padding: 1rem;
-        border-radius: 5px;
+        border-radius: 8px;
         margin: 1rem 0;
+        border-left: 4px solid var(--linkedin-error);
     }
+    
     .chat-message {
         padding: 1rem;
         border-radius: 10px;
         margin: 0.5rem 0;
     }
+    
     .user-message {
         background-color: #e3f2fd;
         margin-left: 2rem;
+        border-left: 4px solid var(--linkedin-blue);
     }
+    
     .assistant-message {
         background-color: #f5f5f5;
         margin-right: 2rem;
+        border-left: 4px solid var(--linkedin-gray-2);
     }
+    
     .stButton>button {
-        width: 100%;
-        background-color: #0A66C2;
+        background-color: var(--linkedin-blue);
         color: white;
-        border-radius: 5px;
-        padding: 0.5rem 1rem;
-        font-weight: bold;
+        font-weight: 600;
+        border-radius: 24px;
+        padding: 8px 24px;
+        transition: all 0.2s;
+        border: none;
     }
+    
     .stButton>button:hover {
-        background-color: #084d8f;
+        background-color: var(--linkedin-dark-blue);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+    }
+    
+    .file-preview {
+        background: var(--linkedin-gray-1);
+        border: 2px dashed var(--linkedin-gray-2);
+        border-radius: 8px;
+        padding: 1rem;
+        text-align: center;
+        margin: 1rem 0;
+    }
+    
+    .linkedin-post {
+        background: white;
+        border: 1px solid var(--linkedin-gray-2);
+        border-radius: 8px;
+        padding: 20px;
+        margin: 1rem 0;
+        box-shadow: 0 0 0 1px rgba(0,0,0,0.08);
+    }
+    
+    .post-header {
+        display: flex;
+        align-items: center;
+        margin-bottom: 1rem;
+    }
+    
+    .post-engagement {
+        display: flex;
+        justify-content: space-around;
+        padding: 0.5rem 0;
+        border-top: 1px solid var(--linkedin-gray-2);
+        margin-top: 1rem;
+    }
+    
+    .engagement-button {
+        background: none;
+        border: none;
+        color: #666;
+        cursor: pointer;
+        padding: 0.5rem;
+        border-radius: 4px;
+        transition: background-color 0.2s;
+    }
+    
+    .engagement-button:hover {
+        background-color: var(--linkedin-gray-1);
     }
 </style>
 """, unsafe_allow_html=True)
@@ -119,34 +199,73 @@ def make_api_request(endpoint, method="GET", data=None, files=None):
     except Exception as e:
         return None, f"Connection error: {str(e)}"
 
+def display_error(error_message, suggestion=None):
+    """Display actionable error message with suggestions"""
+    with st.container():
+        st.markdown(f'<div class="error-message">❌ **Error:** {error_message}</div>', unsafe_allow_html=True)
+        
+        if suggestion:
+            st.info(f"💡 **Suggestion:** {suggestion}")
+        
+        with st.expander("🔍 Troubleshooting"):
+            st.markdown("""
+            **Common solutions:**
+            - Check your internet connection
+            - Try a smaller file (max 50MB)
+            - Refresh the page and try again
+            - Contact support if issue persists
+            """)
+        
+        if st.button("🔄 Try Again"):
+            st.rerun()
+
 def display_blog_post(blog_data, quality_score=None):
-    """Display a blog post in a nice format"""
-    st.markdown('<div class="blog-card">', unsafe_allow_html=True)
+    """Display blog post in LinkedIn-like format"""
+    st.markdown('<div class="linkedin-post">', unsafe_allow_html=True)
     
+    # Header with profile-like section
+    col1, col2 = st.columns([1, 10])
+    with col1:
+        st.image("https://via.placeholder.com/50/0A66C2/FFFFFF?text=U", width=50)
+    with col2:
+        st.markdown("**Your Name**")
+        st.caption("Your Title | LinkedIn Profile")
+    
+    st.markdown("---")
+    
+    # Post content
+    if blog_data.get('hook'):
+        st.markdown(f"**{blog_data.get('hook', '')}**")
+        st.markdown("")
+    
+    if blog_data.get('content'):
+        st.markdown(blog_data.get('content', ''))
+        st.markdown("")
+    
+    if blog_data.get('call_to_action'):
+        st.markdown(f"**{blog_data.get('call_to_action', '')}**")
+        st.markdown("")
+    
+    # Hashtags
+    if blog_data.get('hashtags'):
+        st.caption(" ".join(blog_data.get('hashtags', [])))
+    
+    st.markdown("---")
+    
+    # Engagement section
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.button("👍 Like", key=f"like_{id(blog_data)}")
+    with col2:
+        st.button("💬 Comment", key=f"comment_{id(blog_data)}")
+    with col3:
+        st.button("🔄 Repost", key=f"repost_{id(blog_data)}")
+    with col4:
+        st.button("📤 Share", key=f"share_{id(blog_data)}")
+    
+    # Quality score (if provided)
     if quality_score:
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            st.markdown(f"### 📝 {blog_data.get('title', 'Untitled')}")
-        with col2:
-            st.markdown(f'<div class="quality-score">⭐ {quality_score}/10</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f"### 📝 {blog_data.get('title', 'Untitled')}")
-    
-    st.markdown("#### 🎣 Hook")
-    st.write(blog_data.get('hook', ''))
-    
-    st.markdown("#### 📄 Content")
-    st.write(blog_data.get('content', ''))
-    
-    st.markdown("#### 📢 Call to Action")
-    st.write(blog_data.get('call_to_action', ''))
-    
-    st.markdown("#### 🏷️ Hashtags")
-    st.write(" ".join(blog_data.get('hashtags', [])))
-    
-    if blog_data.get('target_audience'):
-        st.markdown("#### 🎯 Target Audience")
-        st.write(blog_data.get('target_audience', ''))
+        st.info(f"📊 Quality Score: {quality_score}/10")
     
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -157,11 +276,14 @@ with st.sidebar:
     st.markdown("---")
     
     # Navigation
-    st.session_state.active_tab = st.radio(
-        "Navigation",
-        ["🏠 Home", "📁 File Upload", "💬 Chatbot", "📊 Multi-File", "ℹ️ About"],
-        index=["🏠 Home", "📁 File Upload", "💬 Chatbot", "📊 Multi-File", "ℹ️ About"].index(st.session_state.active_tab)
-    )
+    st.markdown("### 🧭 Navigation")
+    st.markdown("""
+    - 🏠 **Home** - Overview and quick start
+    - 📁 **File Upload** - Single file processing
+    - 💬 **Chatbot** - Interactive AI assistant
+    - 📊 **Multi-File** - Multiple file aggregation
+    - ℹ️ **About** - Documentation and help
+    """)
     
     st.markdown("---")
     
@@ -178,8 +300,16 @@ with st.sidebar:
     st.markdown("---")
     st.caption("© 2024 LinkedIn Blog Assistant")
 
-# Main content area
-if st.session_state.active_tab == "🏠 Home":
+# Main content area with tabs
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "🏠 Home", 
+    "📁 File Upload", 
+    "💬 Chatbot", 
+    "📊 Multi-File", 
+    "ℹ️ About"
+])
+
+with tab1:
     st.markdown('<div class="main-header">🚀 LinkedIn Blog Assistant</div>', unsafe_allow_html=True)
     st.markdown('<div class="sub-header">Transform any content into engaging LinkedIn posts</div>', unsafe_allow_html=True)
     
@@ -239,7 +369,7 @@ if st.session_state.active_tab == "🏠 Home":
         4. Download the result
         """)
 
-elif st.session_state.active_tab == "📁 File Upload":
+with tab2:
     st.markdown("## 📁 File Upload & Blog Generation")
     st.write("Upload a file and generate a LinkedIn blog post")
     
@@ -258,14 +388,56 @@ elif st.session_state.active_tab == "📁 File Upload":
         max_iterations = st.slider("Max Refinement Iterations", 1, 5, 3)
     
     if uploaded_file:
-        st.info(f"📄 Selected: {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
+        # File preview section
+        st.markdown('<div class="file-preview">', unsafe_allow_html=True)
+        
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        with col1:
+            st.markdown(f"**📄 {uploaded_file.name}**")
+            st.caption(f"Type: {uploaded_file.type or 'Unknown'}")
+        
+        with col2:
+            file_size = uploaded_file.size / 1024
+            if file_size < 1024:
+                st.metric("Size", f"{file_size:.1f} KB")
+            else:
+                st.metric("Size", f"{file_size/1024:.1f} MB")
+        
+        with col3:
+            st.metric("Status", "✅ Ready")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+        
+        # Preview for text files
+        if uploaded_file.type in ["text/plain", "text/markdown"]:
+            with st.expander("📄 Preview Content"):
+                try:
+                    content = uploaded_file.read().decode('utf-8')
+                    preview = content[:500] + "..." if len(content) > 500 else content
+                    st.text(preview)
+                    uploaded_file.seek(0)  # Reset file pointer
+                except:
+                    st.warning("Could not preview file content")
         
         if st.button("🚀 Generate Blog Post", type="primary"):
-            with st.spinner("Processing file and generating blog post..."):
-                # Save uploaded file temporarily
-                temp_path = f"/tmp/{uploaded_file.name}"
-                with open(temp_path, "wb") as f:
-                    f.write(uploaded_file.getbuffer())
+            # Enhanced loading with progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
+            # Step 1: Upload
+            status_text.text("📤 Uploading file...")
+            progress_bar.progress(25)
+            time.sleep(0.5)
+            
+            # Save uploaded file temporarily
+            temp_path = f"/tmp/{uploaded_file.name}"
+            with open(temp_path, "wb") as f:
+                f.write(uploaded_file.getbuffer())
+                
+                # Step 2: Process
+                status_text.text("🔍 Analyzing content...")
+                progress_bar.progress(50)
                 
                 # Upload and generate blog
                 files = {'file': (uploaded_file.name, uploaded_file.getvalue())}
@@ -281,6 +453,18 @@ elif st.session_state.active_tab == "📁 File Upload":
                     data=data,
                     files=files
                 )
+                
+                # Step 3: Generate
+                status_text.text("✨ Generating blog post...")
+                progress_bar.progress(75)
+                time.sleep(0.5)
+                
+                # Step 4: Complete
+                status_text.text("✅ Complete!")
+                progress_bar.progress(100)
+                time.sleep(0.5)
+                progress_bar.empty()
+                status_text.empty()
                 
                 if result and result.get('success'):
                     st.markdown('<div class="success-message">✅ Blog post generated successfully!</div>', unsafe_allow_html=True)
@@ -322,9 +506,29 @@ Target Audience: {blog_post.get('target_audience', '')}
                             if st.button("🔄 Generate Another Version"):
                                 st.rerun()
                 else:
-                    st.markdown(f'<div class="error-message">❌ {error or "Generation failed"}</div>', unsafe_allow_html=True)
+                    # Enhanced error display
+                    if "Connection error" in str(error):
+                        display_error(
+                            "Unable to connect to the server", 
+                            "Please check your internet connection and try again"
+                        )
+                    elif "500" in str(error):
+                        display_error(
+                            "Server error occurred", 
+                            "The server is temporarily unavailable. Please try again in a few minutes"
+                        )
+                    elif "413" in str(error) or "too large" in str(error).lower():
+                        display_error(
+                            "File too large", 
+                            "Please upload a file smaller than 50MB or compress your file first"
+                        )
+                    else:
+                        display_error(
+                            error or "Generation failed", 
+                            "Please try again or contact support if the issue persists"
+                        )
 
-elif st.session_state.active_tab == "💬 Chatbot":
+with tab3:
     st.markdown("## 💬 Conversational Blog Assistant")
     st.write("Chat with the AI to create and refine your LinkedIn posts")
     
@@ -359,14 +563,16 @@ elif st.session_state.active_tab == "💬 Chatbot":
     
     st.markdown("---")
     
-    # Chat history display
-    chat_container = st.container()
+    # Chat history display with fixed height and auto-scroll
+    chat_container = st.container(height=500)
     with chat_container:
         for message in st.session_state.chat_history:
             if message['role'] == 'user':
-                st.markdown(f'<div class="chat-message user-message">👤 You: {message["content"]}</div>', unsafe_allow_html=True)
+                with st.chat_message("user"):
+                    st.write(message["content"])
             else:
-                st.markdown(f'<div class="chat-message assistant-message">🤖 Assistant: {message["content"]}</div>', unsafe_allow_html=True)
+                with st.chat_message("assistant"):
+                    st.write(message["content"])
     
     # File upload in chat
     uploaded_chat_file = st.file_uploader(
@@ -375,45 +581,42 @@ elif st.session_state.active_tab == "💬 Chatbot":
         key="chat_file_uploader"
     )
     
-    # Chat input
-    col1, col2 = st.columns([4, 1])
+    # Chat input with st.chat_input for better UX
+    user_message = st.chat_input("Type your message here...")
     
-    with col1:
-        user_message = st.text_input(
-            "Your message",
-            placeholder="Type your message here...",
-            key="chat_input",
-            label_visibility="collapsed"
-        )
-    
-    with col2:
-        send_button = st.button("📤 Send", type="primary")
-    
-    if send_button and user_message:
+    if user_message:
         # Add user message to history
         st.session_state.chat_history.append({"role": "user", "content": user_message})
         
-        with st.spinner("Thinking..."):
-            # Prepare request
-            data = {
-                "message": user_message,
-                "session_id": st.session_state.session_id
-            }
-            
-            # Send message
-            result, error = make_api_request("/api/chat/message", method="POST", data=data)
-            
-            if result and result.get('success'):
-                response = result.get('response', '')
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
+        # Show user message immediately
+        with st.chat_message("user"):
+            st.write(user_message)
+        
+        # Show assistant response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                # Prepare request
+                data = {
+                    "message": user_message,
+                    "session_id": st.session_state.session_id
+                }
                 
-                # Update blog context if available
-                if result.get('blog_context'):
-                    st.session_state.current_blog = result['blog_context']
+                # Send message
+                result, error = make_api_request("/api/chat/message", method="POST", data=data)
                 
-                st.rerun()
-            else:
-                st.error(f"Error: {error}")
+                if result and result.get('success'):
+                    response = result.get('response', '')
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    
+                    # Update blog context if available
+                    if result.get('blog_context'):
+                        st.session_state.current_blog = result['blog_context']
+                    
+                    st.write(response)
+                else:
+                    error_msg = f"Error: {error}"
+                    st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+                    st.error(error_msg)
     
     # Quick actions
     if st.session_state.current_blog and st.session_state.current_blog.get('current_draft'):
@@ -449,7 +652,7 @@ elif st.session_state.active_tab == "💬 Chatbot":
                 file_name="linkedin_post.txt"
             )
 
-elif st.session_state.active_tab == "📊 Multi-File":
+with tab4:
     st.markdown("## 📊 Multi-File Processing")
     st.write("Upload multiple files and create a comprehensive LinkedIn post")
     
@@ -521,7 +724,7 @@ elif st.session_state.active_tab == "📊 Multi-File":
         else:
             st.warning("⚠️ Please upload between 2 and 10 files")
 
-elif st.session_state.active_tab == "ℹ️ About":
+with tab5:
     st.markdown("## ℹ️ About LinkedIn Blog Assistant")
     
     st.markdown("""
