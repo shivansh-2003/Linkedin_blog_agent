@@ -188,6 +188,36 @@ st.markdown("""
         from { opacity: 0; transform: translateY(10px); }
         to { opacity: 1; transform: translateY(0); }
     }
+    
+    /* Draft action buttons */
+    .stButton button[kind="primary"] {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
+        border: none !important;
+        font-weight: 600 !important;
+        box-shadow: 0 4px 6px rgba(102, 126, 234, 0.3) !important;
+    }
+    
+    .stButton button[kind="primary"]:hover {
+        box-shadow: 0 6px 12px rgba(102, 126, 234, 0.4) !important;
+        transform: translateY(-2px);
+    }
+    
+    /* Suggestion buttons */
+    .stButton button[disabled] {
+        opacity: 0.5 !important;
+        cursor: not-allowed !important;
+    }
+    
+    /* Text area styling */
+    .stTextArea textarea {
+        border: 2px solid #0A66C2 !important;
+        border-radius: 8px !important;
+    }
+    
+    .stTextArea textarea:focus {
+        border-color: #667eea !important;
+        box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.2) !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -462,52 +492,52 @@ with tab2:
             temp_path = f"/tmp/{uploaded_file.name}"
             with open(temp_path, "wb") as f:
                 f.write(uploaded_file.getbuffer())
+            
+            # Step 2: Process
+            status_text.text("🔍 Analyzing content...")
+            progress_bar.progress(50)
+            
+            # Upload and generate blog
+            files = {'file': (uploaded_file.name, uploaded_file.getvalue())}
+            data = {
+                'target_audience': target_audience,
+                'tone': tone,
+                'max_iterations': max_iterations
+            }
+            
+            result, error = make_api_request(
+                "/api/generate-blog-from-file",
+                method="POST",
+                data=data,
+                files=files
+            )
+            
+            # Step 3: Generate
+            status_text.text("✨ Generating blog post...")
+            progress_bar.progress(75)
+            time.sleep(0.5)
+            
+            # Step 4: Complete
+            status_text.text("✅ Complete!")
+            progress_bar.progress(100)
+            time.sleep(0.5)
+            progress_bar.empty()
+            status_text.empty()
+            
+            if result and result.get('success'):
+                st.markdown('<div class="success-message">✅ Blog post generated successfully!</div>', unsafe_allow_html=True)
                 
-                # Step 2: Process
-                status_text.text("🔍 Analyzing content...")
-                progress_bar.progress(50)
-                
-                # Upload and generate blog
-                files = {'file': (uploaded_file.name, uploaded_file.getvalue())}
-                data = {
-                    'target_audience': target_audience,
-                    'tone': tone,
-                    'max_iterations': max_iterations
-                }
-                
-                result, error = make_api_request(
-                    "/api/generate-blog-from-file",
-                    method="POST",
-                    data=data,
-                    files=files
-                )
-                
-                # Step 3: Generate
-                status_text.text("✨ Generating blog post...")
-                progress_bar.progress(75)
-                time.sleep(0.5)
-                
-                # Step 4: Complete
-                status_text.text("✅ Complete!")
-                progress_bar.progress(100)
-                time.sleep(0.5)
-                progress_bar.empty()
-                status_text.empty()
-                
-                if result and result.get('success'):
-                    st.markdown('<div class="success-message">✅ Blog post generated successfully!</div>', unsafe_allow_html=True)
+                # Display results
+                blog_post = result.get('blog_post')
+                if blog_post:
+                    display_blog_post(blog_post, result.get('quality_score'))
                     
-                    # Display results
-                    blog_post = result.get('blog_post')
-                    if blog_post:
-                        display_blog_post(blog_post, result.get('quality_score'))
-                        
-                        # Download option
-                        st.markdown("---")
-                        col1, col2 = st.columns(2)
-                        
-                        with col1:
-                            blog_text = f"""LinkedIn Blog Post
+                    # Download option
+                    st.markdown("---")
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        blog_text = f"""LinkedIn Blog Post
 {'=' * 50}
 
 Title: {blog_post.get('title', '')}
@@ -523,38 +553,38 @@ Hashtags: {' '.join(blog_post.get('hashtags', []))}
 
 Target Audience: {blog_post.get('target_audience', '')}
 """
-                            st.download_button(
-                                "📥 Download Blog Post",
-                                blog_text,
-                                file_name=f"linkedin_post_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                                mime="text/plain"
-                            )
-                        
-                        with col2:
-                            if st.button("🔄 Generate Another Version"):
-                                st.rerun()
+                        st.download_button(
+                            "📥 Download Blog Post",
+                            blog_text,
+                            file_name=f"linkedin_post_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                            mime="text/plain"
+                        )
+                    
+                    with col2:
+                        if st.button("🔄 Generate Another Version"):
+                            st.rerun()
+            else:
+                # Enhanced error display
+                if "Connection error" in str(error):
+                    display_error(
+                        "Unable to connect to the server", 
+                        "Please check your internet connection and try again"
+                    )
+                elif "500" in str(error):
+                    display_error(
+                        "Server error occurred", 
+                        "The server is temporarily unavailable. Please try again in a few minutes"
+                    )
+                elif "413" in str(error) or "too large" in str(error).lower():
+                    display_error(
+                        "File too large", 
+                        "Please upload a file smaller than 50MB or compress your file first"
+                    )
                 else:
-                    # Enhanced error display
-                    if "Connection error" in str(error):
-                        display_error(
-                            "Unable to connect to the server", 
-                            "Please check your internet connection and try again"
-                        )
-                    elif "500" in str(error):
-                        display_error(
-                            "Server error occurred", 
-                            "The server is temporarily unavailable. Please try again in a few minutes"
-                        )
-                    elif "413" in str(error) or "too large" in str(error).lower():
-                        display_error(
-                            "File too large", 
-                            "Please upload a file smaller than 50MB or compress your file first"
-                        )
-                    else:
-                        display_error(
-                            error or "Generation failed", 
-                            "Please try again or contact support if the issue persists"
-                        )
+                    display_error(
+                        error or "Generation failed", 
+                        "Please try again or contact support if the issue persists"
+                    )
 
 with tab3:
     st.markdown("## 💬 Conversational Blog Assistant")
@@ -661,7 +691,7 @@ with tab3:
             key="chat_file_uploader",
             label_visibility="collapsed"
         )
-        
+    
         if uploaded_chat_file:
             col1, col2 = st.columns([3, 1])
             with col1:
@@ -723,7 +753,7 @@ with tab3:
                 error_msg = f"❌ Error: {error}"
                 message_placeholder.markdown(error_msg)
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
-        
+                
         # Increment chat input key to reset it
         st.session_state.chat_input_key += 1
         st.rerun()
@@ -731,56 +761,67 @@ with tab3:
     # Current Draft Section (if available)
     if st.session_state.current_blog and st.session_state.current_blog.get('current_draft'):
         st.divider()
-        st.markdown("### 📝 Current Draft")
         
-        draft = st.session_state.current_blog['current_draft']
-        
-        # Draft preview in a card
+        # Sticky header for draft section
         st.markdown("""
-            <div style='background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%); 
-                        padding: 1.5rem; border-radius: 12px; margin-bottom: 1rem;'>
-                <h4 style='margin-top: 0;'>📌 Draft Preview</h4>
+            <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                        color: white; padding: 1rem 1.5rem; border-radius: 8px 8px 0 0; 
+                        margin-bottom: 0;'>
+                <h3 style='margin: 0; color: white;'>📝 Current Draft</h3>
+                <p style='margin: 0.25rem 0 0 0; opacity: 0.9; font-size: 0.9rem;'>
+                    Review your generated LinkedIn post below
+                </p>
             </div>
         """, unsafe_allow_html=True)
         
+        draft = st.session_state.current_blog['current_draft']
+        
+        # Draft preview with better visual hierarchy
+        with st.container():
+            st.markdown("""
+                <div style='background: #f8f9fa; padding: 1.5rem; 
+                            border: 2px solid #e9ecef; border-radius: 0 0 8px 8px;'>
+            """, unsafe_allow_html=True)
+            
         display_blog_post(draft)
         
-        # Action buttons
-        st.markdown("#### 🎯 What would you like to do?")
+        st.markdown("</div>", unsafe_allow_html=True)
         
-        col1, col2, col3, col4 = st.columns(4)
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        # Action Section with better UX
+        st.markdown("""
+            <div style='background: white; padding: 1.5rem; border-radius: 8px; 
+                        border: 2px solid #e9ecef; margin-top: 1rem;'>
+                <h4 style='margin-top: 0; color: #0A66C2;'>🎯 What would you like to do?</h4>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        # Primary actions row
+        col1, col2, col3 = st.columns([2, 2, 2])
         
         with col1:
-            if st.button("✅ Approve", use_container_width=True, type="primary"):
-                data = {
-                    "session_id": st.session_state.session_id,
-                    "approved": True,
-                    "final_notes": "Approved via Streamlit interface"
-                }
-                result, error = make_api_request("/api/chat/approve", method="POST", data=data)
-                if result:
-                    st.success("✅ Draft approved!")
-                    st.balloons()
-                    time.sleep(1)
-                    st.rerun()
-        
-        with col2:
-            feedback_text = st.text_input(
-                "Feedback",
-                placeholder="e.g., Make it more casual",
-                label_visibility="collapsed"
-            )
-            if st.button("📝 Improve", use_container_width=True):
-                if feedback_text:
-                    # Send feedback as a message
-                    st.session_state.messages.append({"role": "user", "content": feedback_text})
-                    st.rerun()
-                else:
-                    st.warning("Please provide feedback first")
-        
-        with col3:
-            # Multiple download formats
-            blog_text = f"""# {draft.get('title', '')}
+            st.markdown("##### ✅ Approve & Download")
+            if st.button(
+                "✅ Approve Draft", 
+                use_container_width=True, 
+                type="primary",
+                key="approve_btn"
+            ):
+                with st.spinner("Finalizing your post..."):
+                    data = {
+                        "session_id": st.session_state.session_id,
+                        "approved": True,
+                        "final_notes": "Approved via Streamlit interface"
+                    }
+                    result, error = make_api_request("/api/chat/approve", method="POST", data=data)
+                    
+                    if result:
+                        st.success("✅ Draft approved!")
+                        st.balloons()
+                        
+                        # Auto-download on approval
+                        blog_text = f"""# {draft.get('title', '')}
 
 {draft.get('hook', '')}
 
@@ -789,22 +830,195 @@ with tab3:
 **{draft.get('call_to_action', '')}**
 
 {' '.join(draft.get('hashtags', []))}
+
+---
+Generated by LinkedIn Blog Assistant
+{datetime.now().strftime('%B %d, %Y at %I:%M %p')}
 """
-            st.download_button(
-                "📥 Download",
-                blog_text,
-                file_name=f"linkedin_post_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-                mime="text/markdown",
-                use_container_width=True
-            )
+                        st.download_button(
+                            "📥 Download Approved Post",
+                            blog_text,
+                            file_name=f"linkedin_post_approved_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                            mime="text/markdown",
+                            use_container_width=True,
+                            type="primary"
+                        )
+                    else:
+                        st.error(f"Approval failed: {error}")
         
-        with col4:
-            if st.button("🔄 Regenerate", use_container_width=True):
+        with col2:
+            st.markdown("##### 📝 Request Changes")
+            
+            # Feedback input with better placeholder
+            feedback_text = st.text_area(
+                "What changes would you like?",
+                placeholder="e.g., Make it more casual, add statistics, shorten the hook...",
+                height=100,
+                key="feedback_input",
+                label_visibility="collapsed"
+            )
+            
+            if st.button(
+                "📝 Improve with Feedback", 
+                use_container_width=True,
+                disabled=not feedback_text,
+                key="improve_btn"
+            ):
+                if feedback_text.strip():
+                    # Add feedback message to chat
+                    st.session_state.messages.append({
+                        "role": "user", 
+                        "content": f"Please improve the draft: {feedback_text}"
+                    })
+                    st.session_state.chat_history.append({
+                        "role": "user", 
+                        "content": f"Please improve the draft: {feedback_text}"
+                    })
+                    st.rerun()
+                else:
+                    st.warning("Please enter your feedback first")
+        
+        with col3:
+            st.markdown("##### 🔄 Start Fresh")
+            
+            if st.button(
+                "🔄 Regenerate Completely", 
+                use_container_width=True,
+                key="regenerate_btn"
+            ):
+                regenerate_prompt = "Please create a completely different version of this post with a fresh approach"
                 st.session_state.messages.append({
                     "role": "user", 
-                    "content": "Please regenerate this post with a different approach"
+                    "content": regenerate_prompt
+                })
+                st.session_state.chat_history.append({
+                    "role": "user", 
+                    "content": regenerate_prompt
                 })
                 st.rerun()
+            
+            st.markdown("<br>", unsafe_allow_html=True)
+            
+            # Multiple export formats
+            with st.expander("📥 More Download Options"):
+                # Text format
+                blog_text_plain = f"""{draft.get('title', '')}
+
+{draft.get('hook', '')}
+
+{draft.get('content', '')}
+
+{draft.get('call_to_action', '')}
+
+{' '.join(draft.get('hashtags', []))}
+"""
+                
+                # Markdown format
+                blog_markdown = f"""# {draft.get('title', '')}
+
+## Hook
+{draft.get('hook', '')}
+
+## Content
+{draft.get('content', '')}
+
+## Call to Action
+{draft.get('call_to_action', '')}
+
+## Hashtags
+{' '.join(draft.get('hashtags', []))}
+"""
+                
+                # JSON format
+                blog_json = json.dumps(draft, indent=2)
+                
+                col_a, col_b, col_c = st.columns(3)
+                
+                with col_a:
+                    st.download_button(
+                        "📄 TXT",
+                        blog_text_plain,
+                        file_name="linkedin_post.txt",
+                        mime="text/plain",
+                        use_container_width=True
+                    )
+                
+                with col_b:
+                    st.download_button(
+                        "📝 MD",
+                        blog_markdown,
+                        file_name="linkedin_post.md",
+                        mime="text/markdown",
+                        use_container_width=True
+                    )
+                
+                with col_c:
+                    st.download_button(
+                        "📋 JSON",
+                        blog_json,
+                        file_name="linkedin_post.json",
+                        mime="application/json",
+                        use_container_width=True
+                    )
+        
+        # Quick improvement suggestions
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown("""
+            <div style='background: #fff3cd; padding: 1rem; border-radius: 8px; 
+                        border-left: 4px solid #ffc107;'>
+                <h5 style='margin-top: 0;'>💡 Quick Improvement Suggestions</h5>
+                <p style='margin-bottom: 0.5rem;'>Not sure what to ask for? Try these:</p>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        suggestion_cols = st.columns(4)
+        
+        suggestions = [
+            ("📏 Shorten", "Make this post more concise and under 1000 characters"),
+            ("🎨 More Casual", "Rewrite this in a more casual, conversational tone"),
+            ("📊 Add Data", "Add relevant statistics or data points to strengthen the argument"),
+            ("🎯 Stronger CTA", "Create a more compelling call-to-action that encourages engagement")
+        ]
+        
+        for idx, (label, prompt) in enumerate(suggestions):
+            with suggestion_cols[idx]:
+                if st.button(label, use_container_width=True, key=f"suggestion_{idx}"):
+                    st.session_state.messages.append({"role": "user", "content": prompt})
+                    st.session_state.chat_history.append({"role": "user", "content": prompt})
+                    st.rerun()
+        
+        # Draft analytics (optional enhancement)
+        with st.expander("📊 Draft Analytics"):
+            col1, col2, col3, col4 = st.columns(4)
+            
+            content_length = len(draft.get('content', ''))
+            word_count = len(draft.get('content', '').split())
+            hashtag_count = len(draft.get('hashtags', []))
+            
+            with col1:
+                st.metric("Characters", content_length)
+                if content_length < 150:
+                    st.caption("⚠️ Too short")
+                elif content_length > 1300:
+                    st.caption("⚠️ Too long")
+                else:
+                    st.caption("✅ Good length")
+            
+            with col2:
+                st.metric("Words", word_count)
+            
+            with col3:
+                st.metric("Hashtags", hashtag_count)
+                if hashtag_count < 3:
+                    st.caption("⚠️ Add more")
+                elif hashtag_count > 10:
+                    st.caption("⚠️ Too many")
+                else:
+                    st.caption("✅ Good count")
+            
+            with col4:
+                engagement_score = draft.get('estimated_engagement_score', 0)
+                st.metric("Est. Engagement", f"{engagement_score}/10")
     
     # Quick action suggestions
     if len(st.session_state.messages) == 0:
