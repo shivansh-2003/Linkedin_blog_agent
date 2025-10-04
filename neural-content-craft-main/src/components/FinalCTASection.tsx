@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Zap, Sparkles, CheckCircle, ArrowRight, Clock, Target, TrendingUp } from "lucide-react";
+import { Link } from "react-router-dom";
 
 const FinalCTASection = () => {
   const [email, setEmail] = useState("");
@@ -84,11 +85,13 @@ const FinalCTASection = () => {
                   placeholder="Enter your email to get started"
                   className="flex-1 px-6 py-4 rounded-xl bg-background-elevated border border-border-primary text-text-primary placeholder-text-muted focus:outline-none focus:ring-2 focus:ring-accent-primary text-lg"
                 />
-                <Button className="btn-hero text-lg px-8 py-4 group">
-                  <Zap className="w-5 h-5 mr-2 group-hover:rotate-12 transition-transform" />
-                  Start Free Now
-                  <ArrowRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />
-                </Button>
+                <Link to="/chat">
+                  <Button className="btn-hero text-lg px-8 py-4 group">
+                    <Zap className="w-5 h-5 mr-2 group-hover:rotate-12 transition-transform" />
+                    Start Free Now
+                    <ArrowRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />
+                  </Button>
+                </Link>
               </div>
 
               <p className="text-text-tertiary text-sm mb-8">

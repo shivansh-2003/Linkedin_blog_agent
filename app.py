@@ -1,446 +1,617 @@
-#!/usr/bin/env python3
-"""
-LinkedIn Blog AI Assistant - Streamlit Chat Application
-
-A comprehensive chat interface that integrates:
-- Chatbot orchestrator for conversational interactions
-- Blog generation workflow with LangGraph
-- Ingestion system for document processing
-- LangSmith tracing for monitoring
-"""
-
 import streamlit as st
-import asyncio
-import os
-import sys
-import tempfile
-import time
-from pathlib import Path
-from typing import Optional, Dict, Any, List
+import requests
 import json
+from datetime import datetime
+from pathlib import Path
+import time
 
-# Add project root to path
-sys.path.append(str(Path(__file__).parent))
-
-# Import all modules
-from chatbot.chatbot_orchastrator import ChatbotOrchestrator
-from chatbot.config import ChatStage, UserIntent
-from blog_generation.workflow import BlogGenerationWorkflow
-from blog_generation.config import BlogGenerationState, ProcessingStatus
-from ingestion.unified_processor import UnifiedProcessor
-from langsmith_config import trace_step, verify_langsmith_setup
+# Backend API URL
+API_BASE_URL = "https://linkedin-blog-agent-1.onrender.com"
 
 # Page configuration
 st.set_page_config(
-    page_title="LinkedIn Blog AI Assistant",
-    page_icon="🤖",
+    page_title="LinkedIn Blog Assistant",
+    page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS for better styling
+# Custom CSS for better UI
 st.markdown("""
 <style>
     .main-header {
         font-size: 2.5rem;
         font-weight: bold;
-        color: #0077b5;
+        color: #0A66C2;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+    .sub-header {
+        font-size: 1.2rem;
+        color: #666;
         text-align: center;
         margin-bottom: 2rem;
+    }
+    .blog-card {
+        background-color: #f8f9fa;
+        padding: 1.5rem;
+        border-radius: 10px;
+        border-left: 4px solid #0A66C2;
+        margin: 1rem 0;
+    }
+    .quality-score {
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #0A66C2;
+    }
+    .success-message {
+        background-color: #d4edda;
+        border-color: #c3e6cb;
+        color: #155724;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .error-message {
+        background-color: #f8d7da;
+        border-color: #f5c6cb;
+        color: #721c24;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
     }
     .chat-message {
         padding: 1rem;
         border-radius: 10px;
-        margin-bottom: 1rem;
-        border-left: 4px solid;
+        margin: 0.5rem 0;
     }
     .user-message {
         background-color: #e3f2fd;
-        border-left-color: #2196f3;
+        margin-left: 2rem;
     }
-    .bot-message {
-        background-color: #f3e5f5;
-        border-left-color: #9c27b0;
+    .assistant-message {
+        background-color: #f5f5f5;
+        margin-right: 2rem;
     }
-    .system-message {
-        background-color: #fff3e0;
-        border-left-color: #ff9800;
+    .stButton>button {
+        width: 100%;
+        background-color: #0A66C2;
+        color: white;
+        border-radius: 5px;
+        padding: 0.5rem 1rem;
+        font-weight: bold;
     }
-    .status-indicator {
-        display: inline-block;
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        margin-right: 8px;
-    }
-    .status-ready { background-color: #4caf50; }
-    .status-processing { background-color: #ff9800; }
-    .status-error { background-color: #f44336; }
-    .file-upload-area {
-        border: 2px dashed #ccc;
-        border-radius: 10px;
-        padding: 2rem;
-        text-align: center;
-        margin: 1rem 0;
+    .stButton>button:hover {
+        background-color: #084d8f;
     }
 </style>
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "chatbot" not in st.session_state:
-    st.session_state.chatbot = None
-if "blog_workflow" not in st.session_state:
-    st.session_state.blog_workflow = None
-if "ingestion_processor" not in st.session_state:
-    st.session_state.ingestion_processor = None
-if "langsmith_ready" not in st.session_state:
-    st.session_state.langsmith_ready = False
-if "current_stage" not in st.session_state:
-    st.session_state.current_stage = ChatStage.INITIAL
-if "blog_context" not in st.session_state:
-    st.session_state.blog_context = None
+if 'session_id' not in st.session_state:
+    st.session_state.session_id = None
+if 'chat_history' not in st.session_state:
+    st.session_state.chat_history = []
+if 'current_blog' not in st.session_state:
+    st.session_state.current_blog = None
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = "🏠 Home"
 
-@trace_step("streamlit_app_initialization", "tool")
-def initialize_components():
-    """Initialize all system components"""
+# Helper functions
+def make_api_request(endpoint, method="GET", data=None, files=None):
+    """Make API request to backend"""
+    url = f"{API_BASE_URL}{endpoint}"
     try:
-        # Initialize LangSmith
-        if verify_langsmith_setup():
-            st.session_state.langsmith_ready = True
-            st.success("✅ LangSmith tracing enabled")
+        if method == "GET":
+            response = requests.get(url)
+        elif method == "POST":
+            if files:
+                response = requests.post(url, data=data, files=files)
+            else:
+                response = requests.post(url, json=data)
+        elif method == "DELETE":
+            response = requests.delete(url)
+        
+        if response.status_code == 200:
+            return response.json(), None
         else:
-            st.warning("⚠️ LangSmith not configured - tracing disabled")
-        
-        # Initialize Chatbot
-        if st.session_state.chatbot is None:
-            st.session_state.chatbot = ChatbotOrchestrator()
-            st.success("✅ Chatbot initialized")
-        
-        # Initialize Blog Generation Workflow
-        if st.session_state.blog_workflow is None:
-            st.session_state.blog_workflow = BlogGenerationWorkflow()
-            st.success("✅ Blog generation workflow initialized")
-        
-        # Initialize Ingestion Processor
-        if st.session_state.ingestion_processor is None:
-            st.session_state.ingestion_processor = UnifiedProcessor()
-            st.success("✅ Document ingestion processor initialized")
-        
-        return True
+            return None, f"Error: {response.status_code} - {response.text}"
     except Exception as e:
-        st.error(f"❌ Initialization failed: {str(e)}")
-        return False
+        return None, f"Connection error: {str(e)}"
 
-@trace_step("streamlit_chat_processing", "workflow")
-async def process_chat_message(user_input: str, uploaded_file: Optional[bytes] = None, file_name: Optional[str] = None) -> str:
-    """Process user input and generate response"""
-    try:
-        chatbot = st.session_state.chatbot
-        
-        # Handle file upload if present
-        if uploaded_file and file_name:
-            # Save uploaded file temporarily
-            with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file_name).suffix) as tmp_file:
-                tmp_file.write(uploaded_file)
-                tmp_file_path = tmp_file.name
-            
-            try:
-                # Process file through ingestion
-                with st.spinner("📁 Processing uploaded file..."):
-                    result = st.session_state.ingestion_processor.process_file(tmp_file_path)
-                
-                if result.success:
-                    # Add file processing result to context
-                    file_context = f"File '{file_name}' processed successfully. Content type: {result.content_type.value}. AI Analysis: {result.ai_analysis[:200]}..."
-                    user_input = f"{user_input}\n\n[File Context: {file_context}]"
-                    st.success(f"✅ File processed: {result.content_type.value}")
-                else:
-                    st.error(f"❌ File processing failed: {result.error}")
-                    return "I'm sorry, but I couldn't process the uploaded file. Please try again or provide the content in text format."
-            finally:
-                # Clean up temporary file
-                os.unlink(tmp_file_path)
-        
-        # Process through chatbot
-        with st.spinner("🤖 Processing your message..."):
-            response = await chatbot.process_user_input(user_input)
-        
-        return response
-    except Exception as e:
-        st.error(f"❌ Error processing message: {str(e)}")
-        return "I'm sorry, but I encountered an error processing your request. Please try again."
-
-@trace_step("streamlit_blog_generation", "workflow")
-async def generate_blog_post(content: str, requirements: str = "") -> Dict[str, Any]:
-    """Generate a blog post using the blog generation workflow"""
-    try:
-        workflow = st.session_state.blog_workflow
-        
-        # Create initial state
-        initial_state = BlogGenerationState(
-            source_content=content,
-            user_requirements=requirements or "Create an engaging LinkedIn blog post",
-            max_iterations=2,
-            current_status=ProcessingStatus.GENERATING
-        )
-        
-        # Run workflow
-        with st.spinner("📝 Generating blog post..."):
-            result_state = workflow.run_workflow(initial_state)
-        
-        return {
-            "success": result_state.current_status == ProcessingStatus.COMPLETED,
-            "blog_post": result_state.final_blog,
-            "quality_score": result_state.latest_critique.quality_score if result_state.latest_critique else 0,
-            "iterations": result_state.iteration_count,
-            "error": result_state.last_error
-        }
-    except Exception as e:
-        return {
-            "success": False,
-            "blog_post": None,
-            "quality_score": 0,
-            "iterations": 0,
-            "error": str(e)
-        }
-
-def display_chat_message(message: Dict[str, Any]):
-    """Display a chat message with appropriate styling"""
-    if message["role"] == "user":
-        st.markdown(f"""
-        <div class="chat-message user-message">
-            <strong>You:</strong> {message["content"]}
-        </div>
-        """, unsafe_allow_html=True)
-    elif message["role"] == "assistant":
-        st.markdown(f"""
-        <div class="chat-message bot-message">
-            <strong>BlogBot:</strong> {message["content"]}
-        </div>
-        """, unsafe_allow_html=True)
+def display_blog_post(blog_data, quality_score=None):
+    """Display a blog post in a nice format"""
+    st.markdown('<div class="blog-card">', unsafe_allow_html=True)
+    
+    if quality_score:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"### 📝 {blog_data.get('title', 'Untitled')}")
+        with col2:
+            st.markdown(f'<div class="quality-score">⭐ {quality_score}/10</div>', unsafe_allow_html=True)
     else:
-        st.markdown(f"""
-        <div class="chat-message system-message">
-            <strong>System:</strong> {message["content"]}
-        </div>
-        """, unsafe_allow_html=True)
+        st.markdown(f"### 📝 {blog_data.get('title', 'Untitled')}")
+    
+    st.markdown("#### 🎣 Hook")
+    st.write(blog_data.get('hook', ''))
+    
+    st.markdown("#### 📄 Content")
+    st.write(blog_data.get('content', ''))
+    
+    st.markdown("#### 📢 Call to Action")
+    st.write(blog_data.get('call_to_action', ''))
+    
+    st.markdown("#### 🏷️ Hashtags")
+    st.write(" ".join(blog_data.get('hashtags', [])))
+    
+    if blog_data.get('target_audience'):
+        st.markdown("#### 🎯 Target Audience")
+        st.write(blog_data.get('target_audience', ''))
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
-def main():
-    """Main Streamlit application"""
+# Sidebar
+with st.sidebar:
+    st.image("https://cdn-icons-png.flaticon.com/512/174/174857.png", width=100)
+    st.title("LinkedIn Blog Assistant")
+    st.markdown("---")
     
-    # Header
-    st.markdown('<h1 class="main-header">🤖 LinkedIn Blog AI Assistant</h1>', unsafe_allow_html=True)
+    # Navigation
+    st.session_state.active_tab = st.radio(
+        "Navigation",
+        ["🏠 Home", "📁 File Upload", "💬 Chatbot", "📊 Multi-File", "ℹ️ About"],
+        index=["🏠 Home", "📁 File Upload", "💬 Chatbot", "📊 Multi-File", "ℹ️ About"].index(st.session_state.active_tab)
+    )
     
-    # Sidebar for system status and controls
-    with st.sidebar:
-        st.header("🔧 System Status")
-        
-        # Initialize components
-        if st.button("🔄 Initialize System"):
-            initialize_components()
-        
-        # Display system status
-        st.subheader("Component Status")
-        
-        # LangSmith status
-        langsmith_status = "🟢 Ready" if st.session_state.langsmith_ready else "🔴 Not Configured"
-        st.write(f"LangSmith: {langsmith_status}")
-        
-        # Chatbot status
-        chatbot_status = "🟢 Ready" if st.session_state.chatbot else "🔴 Not Initialized"
-        st.write(f"Chatbot: {chatbot_status}")
-        
-        # Blog workflow status
-        blog_status = "🟢 Ready" if st.session_state.blog_workflow else "🔴 Not Initialized"
-        st.write(f"Blog Generation: {blog_status}")
-        
-        # Ingestion status
-        ingestion_status = "🟢 Ready" if st.session_state.ingestion_processor else "🔴 Not Initialized"
-        st.write(f"Document Ingestion: {ingestion_status}")
-        
-        # Current stage
-        st.subheader("Current Stage")
-        st.write(f"Stage: {st.session_state.current_stage.value}")
-        
-        # Clear chat button
-        if st.button("🗑️ Clear Chat"):
-            st.session_state.messages = []
-            st.session_state.current_stage = ChatStage.INITIAL
-            st.session_state.blog_context = None
-            st.rerun()
-        
-        # Export chat button
-        if st.button("📥 Export Chat"):
-            chat_data = {
-                "messages": st.session_state.messages,
-                "timestamp": time.time(),
-                "langsmith_ready": st.session_state.langsmith_ready
-            }
-            st.download_button(
-                label="Download Chat History",
-                data=json.dumps(chat_data, indent=2),
-                file_name=f"chat_history_{int(time.time())}.json",
-                mime="application/json"
-            )
+    st.markdown("---")
     
-    # Main chat interface
+    # API Status
+    st.subheader("🔌 API Status")
+    with st.spinner("Checking..."):
+        health_data, error = make_api_request("/health")
+        if health_data:
+            st.success("✅ Connected")
+            st.caption(f"Version: {health_data.get('version', 'Unknown')}")
+        else:
+            st.error("❌ Disconnected")
+    
+    st.markdown("---")
+    st.caption("© 2024 LinkedIn Blog Assistant")
+
+# Main content area
+if st.session_state.active_tab == "🏠 Home":
+    st.markdown('<div class="main-header">🚀 LinkedIn Blog Assistant</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">Transform any content into engaging LinkedIn posts</div>', unsafe_allow_html=True)
+    
+    # Features overview
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.markdown("### 📁 File Processing")
+        st.write("Upload PDFs, Word docs, PowerPoint, code files, or images")
+        st.write("✓ AI-powered content extraction")
+        st.write("✓ Multi-format support")
+        st.write("✓ Instant analysis")
+    
+    with col2:
+        st.markdown("### ✨ Blog Generation")
+        st.write("Create engaging LinkedIn posts automatically")
+        st.write("✓ Quality scoring (1-10)")
+        st.write("✓ Iterative refinement")
+        st.write("✓ LinkedIn optimization")
+    
+    with col3:
+        st.markdown("### 💬 Conversational AI")
+        st.write("Interactive chatbot for personalized assistance")
+        st.write("✓ Human-in-the-loop feedback")
+        st.write("✓ Session memory")
+        st.write("✓ Smart improvements")
+    
+    st.markdown("---")
+    
+    # Quick start guide
+    st.markdown("### 🎯 Quick Start Guide")
+    
+    with st.expander("1️⃣ Upload a File"):
+        st.write("""
+        Navigate to the **File Upload** tab and:
+        1. Upload your document (PDF, Word, PPT, code, image)
+        2. Set your preferences (audience, tone)
+        3. Click **Generate Blog Post**
+        4. Review and refine the generated post
+        """)
+    
+    with st.expander("2️⃣ Use the Chatbot"):
+        st.write("""
+        Navigate to the **Chatbot** tab and:
+        1. Start a conversation about your content
+        2. Upload files or provide text directly
+        3. Give feedback to improve the posts
+        4. Approve when you're satisfied
+        """)
+    
+    with st.expander("3️⃣ Process Multiple Files"):
+        st.write("""
+        Navigate to the **Multi-File** tab and:
+        1. Upload 2-10 files at once
+        2. Choose aggregation strategy
+        3. Generate a comprehensive post
+        4. Download the result
+        """)
+
+elif st.session_state.active_tab == "📁 File Upload":
+    st.markdown("## 📁 File Upload & Blog Generation")
+    st.write("Upload a file and generate a LinkedIn blog post")
+    
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        st.subheader("💬 Chat Interface")
-        
-        # Display chat messages
-        for message in st.session_state.messages:
-            display_chat_message(message)
-        
-        # File upload section
-        st.subheader("📁 Upload Document")
         uploaded_file = st.file_uploader(
-            "Choose a file to process",
-            type=['pdf', 'docx', 'pptx', 'txt', 'py', 'js', 'java', 'cpp', 'c', 'go', 'rs', 'png', 'jpg', 'jpeg'],
-            help="Supported formats: PDF, Word, PowerPoint, Text, Code files, Images"
+            "Choose a file",
+            type=['pdf', 'docx', 'pptx', 'txt', 'md', 'py', 'js', 'java', 'cpp', 'jpg', 'png'],
+            help="Supported formats: PDF, Word, PowerPoint, Code, Text, Images"
         )
-        
-        # Chat input
-        user_input = st.text_area(
-            "Type your message here...",
-            placeholder="Ask me to create a blog post, process a document, or just chat!",
-            height=100
-        )
-        
-        # Send button
-        col_send1, col_send2, col_send3 = st.columns([1, 1, 2])
-        
-        with col_send1:
-            if st.button("💬 Send Message", type="primary"):
-                if user_input.strip() or uploaded_file:
-                    # Add user message to chat
-                    st.session_state.messages.append({
-                        "role": "user",
-                        "content": user_input,
-                        "timestamp": time.time(),
-                        "file": uploaded_file.name if uploaded_file else None
-                    })
-                    
-                    # Process message
-                    if st.session_state.chatbot:
-                        # Run async function
-                        response = asyncio.run(process_chat_message(
-                            user_input, 
-                            uploaded_file.read() if uploaded_file else None,
-                            uploaded_file.name if uploaded_file else None
-                        ))
-                        
-                        # Add bot response to chat
-                        st.session_state.messages.append({
-                            "role": "assistant",
-                            "content": response,
-                            "timestamp": time.time()
-                        })
-                        
-                        st.rerun()
-                    else:
-                        st.error("❌ Chatbot not initialized. Please initialize the system first.")
-                else:
-                    st.warning("⚠️ Please enter a message or upload a file.")
-        
-        with col_send2:
-            if st.button("📝 Generate Blog"):
-                if user_input.strip():
-                    if st.session_state.blog_workflow:
-                        # Generate blog post
-                        result = asyncio.run(generate_blog_post(user_input))
-                        
-                        if result["success"] and result["blog_post"]:
-                            blog_content = f"""
-**Blog Post Generated Successfully!**
-
-**Title:** {result["blog_post"].title}
-
-**Content:**
-{result["blog_post"].content}
-
-**Hashtags:** {', '.join(result["blog_post"].hashtags)}
-
-**Quality Score:** {result["quality_score"]}/10
-**Iterations:** {result["iterations"]}
-                            """
-                            
-                            st.session_state.messages.append({
-                                "role": "assistant",
-                                "content": blog_content,
-                                "timestamp": time.time()
-                            })
-                            st.rerun()
-                        else:
-                            st.error(f"❌ Blog generation failed: {result['error']}")
-                    else:
-                        st.error("❌ Blog workflow not initialized. Please initialize the system first.")
-                else:
-                    st.warning("⚠️ Please enter content for blog generation.")
     
     with col2:
-        st.subheader("📊 Quick Actions")
+        target_audience = st.text_input("Target Audience", "General professional audience")
+        tone = st.selectbox("Tone", ["Professional and engaging", "Casual and friendly", "Technical and detailed", "Inspirational"])
+        max_iterations = st.slider("Max Refinement Iterations", 1, 5, 3)
+    
+    if uploaded_file:
+        st.info(f"📄 Selected: {uploaded_file.name} ({uploaded_file.size / 1024:.1f} KB)")
         
-        # Quick blog generation
-        st.markdown("**Quick Blog Generation**")
-        quick_content = st.text_area(
-            "Enter content for quick blog:",
-            placeholder="e.g., AI trends in 2024...",
-            height=100
-        )
-        
-        if st.button("⚡ Quick Blog"):
-            if quick_content.strip() and st.session_state.blog_workflow:
-                with st.spinner("Generating quick blog..."):
-                    result = asyncio.run(generate_blog_post(quick_content))
+        if st.button("🚀 Generate Blog Post", type="primary"):
+            with st.spinner("Processing file and generating blog post..."):
+                # Save uploaded file temporarily
+                temp_path = f"/tmp/{uploaded_file.name}"
+                with open(temp_path, "wb") as f:
+                    f.write(uploaded_file.getbuffer())
+                
+                # Upload and generate blog
+                files = {'file': (uploaded_file.name, uploaded_file.getvalue())}
+                data = {
+                    'target_audience': target_audience,
+                    'tone': tone,
+                    'max_iterations': max_iterations
+                }
+                
+                result, error = make_api_request(
+                    "/api/generate-blog-from-file",
+                    method="POST",
+                    data=data,
+                    files=files
+                )
+                
+                if result and result.get('success'):
+                    st.markdown('<div class="success-message">✅ Blog post generated successfully!</div>', unsafe_allow_html=True)
                     
-                    if result["success"] and result["blog_post"]:
-                        st.success("✅ Blog generated!")
-                        st.markdown(f"**{result['blog_post'].title}**")
-                        st.markdown(result["blog_post"].content[:200] + "...")
-                        st.markdown(f"**Quality:** {result['quality_score']}/10")
-                    else:
-                        st.error(f"❌ Failed: {result['error']}")
-            else:
-                st.warning("⚠️ Enter content and ensure system is initialized")
-        
-        # System information
-        st.subheader("ℹ️ System Info")
-        st.markdown("""
-        **Features:**
-        - 🤖 Conversational AI chatbot
-        - 📝 AI-powered blog generation
-        - 📁 Multi-format document processing
-        - 🔍 LangSmith tracing & monitoring
-        - 💬 Interactive chat interface
-        
-        **Supported File Types:**
-        - Documents: PDF, Word, PowerPoint
-        - Code: Python, JavaScript, Java, C++, Go, Rust
-        - Images: PNG, JPG, JPEG
-        - Text: TXT files
-        """)
-        
-        # LangSmith dashboard link
-        if st.session_state.langsmith_ready:
-            st.markdown("**🔍 Monitoring:**")
-            st.markdown("[View LangSmith Dashboard](https://smith.langchain.com)")
-    
-    # Footer
-    st.markdown("---")
-    st.markdown(
-        "<div style='text-align: center; color: #666;'>"
-        "LinkedIn Blog AI Assistant | Powered by LangChain, Groq, and Gemini"
-        "</div>",
-        unsafe_allow_html=True
-    )
+                    # Display results
+                    blog_post = result.get('blog_post')
+                    if blog_post:
+                        display_blog_post(blog_post, result.get('quality_score'))
+                        
+                        # Download option
+                        st.markdown("---")
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            blog_text = f"""LinkedIn Blog Post
+{'=' * 50}
 
-if __name__ == "__main__":
-    # Initialize components on startup
-    if not any([st.session_state.chatbot, st.session_state.blog_workflow, st.session_state.ingestion_processor]):
-        initialize_components()
+Title: {blog_post.get('title', '')}
+
+Hook: {blog_post.get('hook', '')}
+
+Content:
+{blog_post.get('content', '')}
+
+Call-to-Action: {blog_post.get('call_to_action', '')}
+
+Hashtags: {' '.join(blog_post.get('hashtags', []))}
+
+Target Audience: {blog_post.get('target_audience', '')}
+"""
+                            st.download_button(
+                                "📥 Download Blog Post",
+                                blog_text,
+                                file_name=f"linkedin_post_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                                mime="text/plain"
+                            )
+                        
+                        with col2:
+                            if st.button("🔄 Generate Another Version"):
+                                st.rerun()
+                else:
+                    st.markdown(f'<div class="error-message">❌ {error or "Generation failed"}</div>', unsafe_allow_html=True)
+
+elif st.session_state.active_tab == "💬 Chatbot":
+    st.markdown("## 💬 Conversational Blog Assistant")
+    st.write("Chat with the AI to create and refine your LinkedIn posts")
     
-    main()
+    # Session management
+    col1, col2, col3 = st.columns([2, 1, 1])
+    
+    with col1:
+        if st.session_state.session_id:
+            st.success(f"📌 Session: {st.session_state.session_id[:8]}...")
+        else:
+            st.info("No active session")
+    
+    with col2:
+        if st.button("🆕 New Session"):
+            result, error = make_api_request("/api/chat/start", method="POST")
+            if result:
+                st.session_state.session_id = result.get('session_id')
+                st.session_state.chat_history = []
+                st.success("New session started!")
+                st.rerun()
+    
+    with col3:
+        if st.button("🗑️ Clear Chat"):
+            st.session_state.chat_history = []
+            st.rerun()
+    
+    # Start session if needed
+    if not st.session_state.session_id:
+        result, error = make_api_request("/api/chat/start", method="POST")
+        if result:
+            st.session_state.session_id = result.get('session_id')
+    
+    st.markdown("---")
+    
+    # Chat history display
+    chat_container = st.container()
+    with chat_container:
+        for message in st.session_state.chat_history:
+            if message['role'] == 'user':
+                st.markdown(f'<div class="chat-message user-message">👤 You: {message["content"]}</div>', unsafe_allow_html=True)
+            else:
+                st.markdown(f'<div class="chat-message assistant-message">🤖 Assistant: {message["content"]}</div>', unsafe_allow_html=True)
+    
+    # File upload in chat
+    uploaded_chat_file = st.file_uploader(
+        "Upload a file (optional)",
+        type=['pdf', 'docx', 'pptx', 'txt', 'md', 'py', 'js', 'java', 'cpp', 'jpg', 'png'],
+        key="chat_file_uploader"
+    )
+    
+    # Chat input
+    col1, col2 = st.columns([4, 1])
+    
+    with col1:
+        user_message = st.text_input(
+            "Your message",
+            placeholder="Type your message here...",
+            key="chat_input",
+            label_visibility="collapsed"
+        )
+    
+    with col2:
+        send_button = st.button("📤 Send", type="primary")
+    
+    if send_button and user_message:
+        # Add user message to history
+        st.session_state.chat_history.append({"role": "user", "content": user_message})
+        
+        with st.spinner("Thinking..."):
+            # Prepare request
+            data = {
+                "message": user_message,
+                "session_id": st.session_state.session_id
+            }
+            
+            # Send message
+            result, error = make_api_request("/api/chat/message", method="POST", data=data)
+            
+            if result and result.get('success'):
+                response = result.get('response', '')
+                st.session_state.chat_history.append({"role": "assistant", "content": response})
+                
+                # Update blog context if available
+                if result.get('blog_context'):
+                    st.session_state.current_blog = result['blog_context']
+                
+                st.rerun()
+            else:
+                st.error(f"Error: {error}")
+    
+    # Quick actions
+    if st.session_state.current_blog and st.session_state.current_blog.get('current_draft'):
+        st.markdown("---")
+        st.markdown("### 📝 Current Draft")
+        
+        draft = st.session_state.current_blog['current_draft']
+        display_blog_post(draft)
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("✅ Approve Draft"):
+                data = {
+                    "session_id": st.session_state.session_id,
+                    "approved": True,
+                    "final_notes": "Approved via Streamlit interface"
+                }
+                result, error = make_api_request("/api/chat/approve", method="POST", data=data)
+                if result:
+                    st.success("Draft approved!")
+                    st.rerun()
+        
+        with col2:
+            if st.button("🔄 Request Changes"):
+                st.session_state.feedback_mode = True
+        
+        with col3:
+            blog_text = f"{draft.get('title', '')}\n\n{draft.get('hook', '')}\n\n{draft.get('content', '')}\n\n{draft.get('call_to_action', '')}\n\n{' '.join(draft.get('hashtags', []))}"
+            st.download_button(
+                "📥 Download",
+                blog_text,
+                file_name="linkedin_post.txt"
+            )
+
+elif st.session_state.active_tab == "📊 Multi-File":
+    st.markdown("## 📊 Multi-File Processing")
+    st.write("Upload multiple files and create a comprehensive LinkedIn post")
+    
+    uploaded_files = st.file_uploader(
+        "Upload 2-10 files",
+        type=['pdf', 'docx', 'pptx', 'txt', 'md', 'py', 'js', 'java', 'cpp', 'jpg', 'png'],
+        accept_multiple_files=True,
+        help="Upload between 2 and 10 files for aggregation"
+    )
+    
+    if uploaded_files:
+        st.info(f"📁 {len(uploaded_files)} files selected")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            strategy = st.selectbox(
+                "Aggregation Strategy",
+                ["synthesis", "comparison", "sequence", "timeline"],
+                help="synthesis: Blend insights | comparison: Compare sources | sequence: Sequential story | timeline: Chronological"
+            )
+        
+        with col2:
+            target_audience = st.text_input("Target Audience", "General professional audience", key="multi_audience")
+            tone = st.selectbox("Tone", ["Professional and engaging", "Technical", "Inspirational"], key="multi_tone")
+        
+        if len(uploaded_files) >= 2 and len(uploaded_files) <= 10:
+            if st.button("🚀 Generate Aggregated Post", type="primary"):
+                with st.spinner("Processing files and generating comprehensive blog post..."):
+                    files = [('files', (f.name, f.getvalue())) for f in uploaded_files]
+                    data = {
+                        'aggregation_strategy': strategy,
+                        'target_audience': target_audience,
+                        'tone': tone,
+                        'max_iterations': 3
+                    }
+                    
+                    result, error = make_api_request(
+                        "/api/aggregate",
+                        method="POST",
+                        data=data,
+                        files=files
+                    )
+                    
+                    if result and result.get('success'):
+                        st.markdown('<div class="success-message">✅ Aggregated blog post generated!</div>', unsafe_allow_html=True)
+                        
+                        blog_post = result.get('blog_post')
+                        if blog_post:
+                            # Show aggregation info
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Source Files", blog_post.get('source_count', 0))
+                            with col2:
+                                st.metric("Content Types", len(blog_post.get('source_types', [])))
+                            with col3:
+                                st.metric("Quality Score", f"{blog_post.get('engagement_score', 0)}/10")
+                            
+                            # Display blog
+                            display_blog_post(blog_post, blog_post.get('engagement_score'))
+                            
+                            # Show insights
+                            if blog_post.get('unified_insights'):
+                                st.markdown("### 💡 Unified Insights")
+                                for insight in blog_post.get('unified_insights', []):
+                                    st.write(f"• {insight}")
+                    else:
+                        st.markdown(f'<div class="error-message">❌ {error or "Generation failed"}</div>', unsafe_allow_html=True)
+        else:
+            st.warning("⚠️ Please upload between 2 and 10 files")
+
+elif st.session_state.active_tab == "ℹ️ About":
+    st.markdown("## ℹ️ About LinkedIn Blog Assistant")
+    
+    st.markdown("""
+    ### 🎯 What is this?
+    
+    The LinkedIn Blog Assistant is an AI-powered tool that transforms any content into engaging LinkedIn posts. 
+    It uses advanced language models to analyze your content and create professional, optimized posts.
+    
+    ### ✨ Key Features
+    
+    **1. Multi-Format Support**
+    - 📄 Documents: PDF, Word, PowerPoint
+    - 💻 Code: Python, JavaScript, Java, C++, and 20+ languages
+    - 📝 Text: Plain text, Markdown
+    - 🖼️ Images: JPG, PNG with AI vision analysis
+    
+    **2. Intelligent Processing**
+    - AI-powered content extraction
+    - Automatic insight generation
+    - Quality scoring (1-10 scale)
+    - LinkedIn algorithm optimization
+    
+    **3. Human-in-the-Loop**
+    - Interactive refinement
+    - Feedback incorporation
+    - Iterative improvement
+    - Approval workflow
+    
+    **4. Multi-File Aggregation**
+    - Synthesis: Blend insights from multiple sources
+    - Comparison: Compare and contrast content
+    - Sequence: Create sequential narratives
+    - Timeline: Chronological stories
+    
+    ### 🔧 Technology Stack
+    
+    **Frontend**
+    - Streamlit for interactive UI
+    - Python for backend communication
+    
+    **Backend**
+    - FastAPI for REST API
+    - LangChain for document processing
+    - LangGraph for workflow orchestration
+    - Groq for language models
+    - Google Gemini for vision analysis
+    
+    ### 📚 How to Use
+    
+    1. **Upload Content**: Choose your file or provide text
+    2. **Set Preferences**: Specify audience and tone
+    3. **Generate Post**: Let AI create your LinkedIn content
+    4. **Refine**: Provide feedback for improvements
+    5. **Approve**: Download your final post
+    
+    ### 🎓 Best Practices
+    
+    - Provide clear, well-structured source content
+    - Specify your target audience accurately
+    - Use the chatbot for personalized assistance
+    - Review and refine generated content
+    - Leverage multi-file processing for comprehensive posts
+    
+    ### 📞 Support
+    
+    For issues or questions, please refer to the project documentation.
+    
+    ### 📊 API Endpoints
+    
+    - `GET /health` - API health check
+    - `POST /api/ingest` - Process file
+    - `POST /api/generate-blog` - Generate from text
+    - `POST /api/generate-blog-from-file` - Generate from file
+    - `POST /api/aggregate` - Multi-file processing
+    - `POST /api/chat/*` - Chatbot endpoints
+    
+    ---
+    
+    **Version:** 2.0.0  
+    **Last Updated:** 2024  
+    **License:** MIT
+    """)
+
+# Footer
+st.markdown("---")
+st.markdown(
+    """
+    <div style='text-align: center; color: #666;'>
+        <p>Made with ❤️ using Streamlit | Powered by AI</p>
+    </div>
+    """,
+    unsafe_allow_html=True
+)

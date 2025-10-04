@@ -50,10 +50,9 @@ class CritiqueAgent:
         try:
             # Clean up the response
             content = content.strip()
-            if content.startswith("```json"):
-                content = content[7:-3].strip()
-            elif content.startswith("```"):
-                content = content[3:-3].strip()
+            # Remove all markdown code blocks
+            import re
+            content = re.sub(r'```(?:json)?\s*|\s*```', '', content).strip()
             
             # Parse JSON
             data = json.loads(content)

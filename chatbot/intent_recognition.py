@@ -52,13 +52,16 @@ class IntentRecognizer:
         elif current_stage == ChatStage.PRESENTING_DRAFT:
             return self._detect_draft_response_intent(user_input_lower)
         
-        # File upload detection
+        # File upload detection - only if we can actually extract a file path
         if self._is_file_reference(user_input):
-            return UserIntent(
-                intent_type="file_upload",
-                confidence=0.9,
-                entities={"file_path": self._extract_file_path(user_input)}
-            )
+            file_path = self._extract_file_path(user_input)
+            if file_path:  # Only return file_upload intent if we found a valid path
+                return UserIntent(
+                    intent_type="file_upload",
+                    confidence=0.9,
+                    entities={"file_path": file_path}
+                )
+            # If no valid path found, fall through to general intent detection
         
         # General intent detection
         intent_scores = {}
@@ -212,13 +215,16 @@ User message: "{user_input}"
         )
     
     def _is_file_reference(self, user_input: str) -> bool:
-        """Check if user input contains file reference"""
+        """Check if user input contains file reference - must be explicit"""
+        # Only detect file references if there's a clear file-related action or extension
         file_indicators = [
-            "file", "document", "upload", "attach", "pdf", "docx", "pptx", 
-            "image", "code", ".pdf", ".docx", ".txt", ".py", ".js"
+            "upload", "attach", "process this file", "analyze this document",
+            ".pdf", ".docx", ".txt", ".py", ".js", ".pptx", ".jpg", ".png"
         ]
         
-        return any(indicator in user_input.lower() for indicator in file_indicators)
+        user_input_lower = user_input.lower()
+        # Must have either a file extension OR an explicit file action
+        return any(indicator in user_input_lower for indicator in file_indicators)
     
     def _extract_file_path(self, user_input: str) -> Optional[str]:
         """Extract file path from user input"""

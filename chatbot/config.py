@@ -98,8 +98,9 @@ class ChatbotConfig:
             "upload", "file", "document", "pdf", "word"
         ],
         "start_blog": [
-            "create blog", "generate post", "write article", "make content",
-            "linkedin post", "blog post"
+            "create", "write", "make", "generate", "post", "blog",
+            "linkedin", "article", "content", "draft", "compose",
+            "about", "regarding", "on", "topic"
         ],
         "provide_feedback": [
             "change", "improve", "modify", "different", "better",

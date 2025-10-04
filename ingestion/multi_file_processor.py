@@ -14,11 +14,8 @@ from pathlib import Path
 from ingestion.config import ProcessedContent, ContentType
 from ingestion.unified_processor import UnifiedProcessor
 
-# Import from blog_generation module (avoiding circular import)
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from blog_generation.config import AggregationStrategy, MultiSourceContent
+# Import from shared models to avoid circular imports
+from shared.models import AggregationStrategy, MultiSourceContent
 
 class MultiFileProcessor:
     """Process and aggregate multiple files into unified content"""

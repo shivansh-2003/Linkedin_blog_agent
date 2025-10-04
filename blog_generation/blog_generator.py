@@ -56,12 +56,11 @@ class BlogGeneratorAgent:
     def _parse_blog_response(self, content: str) -> Optional[BlogPost]:
         """Parse LLM response into BlogPost object"""
         try:
-            # Clean up the response - remove markdown code blocks if present
+            # Clean up the response - remove all markdown code blocks
+            import re
             content = content.strip()
-            if content.startswith("```json"):
-                content = content[7:-3].strip()
-            elif content.startswith("```"):
-                content = content[3:-3].strip()
+            # Remove all markdown code blocks (```json, ```, etc.)
+            content = re.sub(r'```(?:json)?\s*|\s*```', '', content).strip()
             
             # Parse JSON
             data = json.loads(content)

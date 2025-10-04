@@ -101,6 +101,7 @@ class ChatbotOrchestrator:
         
         handlers = {
             "file_upload": self._handle_file_upload,
+            "multi_file_upload": self._handle_multi_file_upload,
             "start_blog": self._handle_start_blog,
             "provide_feedback": self._handle_provide_feedback,
             "approve_draft": self._handle_approve_draft,

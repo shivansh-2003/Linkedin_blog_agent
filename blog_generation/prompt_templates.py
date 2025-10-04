@@ -33,13 +33,15 @@ CRITICAL REQUIREMENTS:
 JSON Schema for BlogPost:
 {
   "title": "Compelling title (10-60 chars)",
-  "content": "Full LinkedIn post content with hook, value, and CTA",
-  "hook": "Opening hook (first 1-2 sentences)", 
+  "hook": "Opening hook ONLY (first 1-2 sentences that grab attention)",
+  "content": "Main body content AFTER the hook (value, insights, context - do NOT repeat the hook)",
+  "call_to_action": "Specific engagement request (question or CTA)",
   "hashtags": ["#relevant", "#professional", "#hashtags"],
-  "call_to_action": "Specific engagement request",
   "target_audience": "Primary professional audience",
   "estimated_engagement_score": 1-10
-}"""
+}
+
+CRITICAL: The 'hook' and 'content' are SEPARATE fields. Do NOT include the hook text in the content field."""
 
 # LangChain PromptTemplate for blog generation
 BLOG_GENERATION_TEMPLATE = PromptTemplate(
@@ -57,13 +59,14 @@ KEY INSIGHTS:
 {previous_feedback}
 
 LINKEDIN POST GUIDELINES:
-1. START with a compelling hook (question, surprising fact, bold statement, or story opening)
-2. PROVIDE clear value (insights, tips, lessons, or data)
-3. USE conversational, professional tone
-4. INCLUDE personal touches or industry perspective
-5. END with engaging call-to-action (question, opinion request, or share prompt)
-6. ADD 5-8 relevant hashtags
-7. KEEP within 150-1300 characters total
+1. CREATE compelling hook in the 'hook' field (question, surprising fact, bold statement)
+2. WRITE main content in 'content' field WITHOUT repeating the hook
+3. PROVIDE clear value in content (insights, tips, lessons, or data)
+4. USE conversational, professional tone
+5. INCLUDE personal touches or industry perspective
+6. ADD specific call-to-action in 'call_to_action' field
+7. ADD 5-8 relevant hashtags
+8. KEEP total post within 150-1300 characters (hook + content + CTA combined)
 
 ENGAGEMENT TACTICS TO INCLUDE:
 - Ask questions to encourage comments
@@ -253,10 +256,12 @@ REFINEMENT_TEMPLATE = PromptTemplate(
 
 ORIGINAL POST:
 Title: {title}
-Content: {content}
-Hook: {hook}
+Hook (separate field): {hook}
+Content (body text AFTER hook): {content}
 CTA: {call_to_action}
 Hashtags: {hashtags}
+
+IMPORTANT: Keep 'hook' and 'content' as SEPARATE fields. Do NOT repeat the hook in the content.
 
 CRITIQUE ANALYSIS:
 Quality Score: {quality_score}/10

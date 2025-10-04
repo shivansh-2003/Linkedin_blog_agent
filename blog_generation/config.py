@@ -25,11 +25,8 @@ class ProcessingStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
 
-class AggregationStrategy(str, Enum):
-    SYNTHESIS = "synthesis"      # Blend all insights together
-    COMPARISON = "comparison"    # Compare/contrast sources
-    SEQUENCE = "sequence"        # Sequential narrative
-    TIMELINE = "timeline"        # Chronological story
+# Import from shared models to avoid circular imports
+from shared.models import AggregationStrategy
 
 class BlogPost(BaseModel):
     title: str
@@ -211,13 +208,8 @@ class ValidationRules:
         return issues
 
 # Multi-File Processing Models
-class MultiSourceContent(BaseModel):
-    """Content aggregated from multiple sources"""
-    sources: List[Any] = Field(default_factory=list)  # List[ProcessedContent] - using Any to avoid circular import
-    aggregation_strategy: AggregationStrategy
-    cross_references: Dict[str, List[str]] = Field(default_factory=dict)
-    unified_insights: List[str] = Field(default_factory=list)
-    source_relationships: Dict[str, str] = Field(default_factory=dict)
+# Import from shared models to avoid circular imports
+from shared.models import MultiSourceContent
 
 class AggregatedBlogGenerationState(BlogGenerationState):
     """Extended state for multi-source blog generation"""

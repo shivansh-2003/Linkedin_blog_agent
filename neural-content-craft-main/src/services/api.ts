@@ -1,55 +1,23 @@
-const API_BASE_URL = 'https://linkedin-blog-agent-1.onrender.com';
+// API Service for LinkedIn Blog AI Assistant
+// Backend URL: https://linkedin-blog-agent-1.onrender.com
 
-// Types for API responses
-export interface IngestionResponse {
-  success: boolean;
-  error?: string;
-  source_file: string;
-  content_type: string;
-  ai_analysis?: string;
-  key_insights?: string[];
-  metadata?: any;
-  extracted_content?: {
-    content_type: string;
-    file_path: string;
-    raw_text: string;
-    structured_data?: any;
-    metadata?: any;
-    processing_model: string;
-    processing_time: number;
-  };
-}
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'https://linkedin-blog-agent-1.onrender.com';
 
-export interface BlogResponse {
-  success: boolean;
-  error?: string;
-  blog_post?: {
-    title: string;
-    hook: string;
-    content: string;
-    call_to_action: string;
-    hashtags: string[];
-    target_audience: string;
-    engagement_score: number;
-    source_file?: string;
-    ingestion_analysis?: string;
-    aggregation_strategy?: string;
-    source_count?: number;
-    source_types?: string[];
-    unified_insights?: string[];
-    cross_references?: any;
-  };
-  workflow_status?: string;
-  iterations?: number;
-  quality_score?: number;
-}
+// ============================================================================
+// TYPE DEFINITIONS
+// ============================================================================
 
 export interface ChatSessionResponse {
   session_id: string;
   current_stage: string;
   message_count: number;
-  blog_context?: any;
+  blog_context: BlogContext | null;
   created_at: string;
+}
+
+export interface ChatMessageRequest {
+  message: string;
+  session_id: string;
 }
 
 export interface ChatMessageResponse {
@@ -57,8 +25,71 @@ export interface ChatMessageResponse {
   response: string;
   session_id: string;
   current_stage: string;
-  blog_context?: any;
+  blog_context: BlogContext | null;
   error?: string;
+}
+
+export interface BlogContext {
+  source_content?: string;
+  ai_analysis?: string;
+  key_insights?: string[];
+  current_draft?: BlogPost;
+  user_requirements?: string;
+  feedback_history?: string[];
+}
+
+export interface BlogPost {
+  title: string;
+  hook: string;
+  content: string;
+  call_to_action: string;
+  cta?: string;
+  hashtags: string[];
+  target_audience: string;
+  targetAudience?: string;
+  engagement_score: number;
+  source_file?: string;
+  ingestion_analysis?: string;
+}
+
+export interface FileIngestionResponse {
+  success: boolean;
+  error?: string;
+  source_file: string;
+  content_type: string;
+  ai_analysis: string;
+  key_insights: string[];
+  metadata: {
+    file_size?: number;
+    total_pages?: number;
+    [key: string]: any;
+  };
+  extracted_content: {
+    raw_text: string;
+    processing_time: number;
+    [key: string]: any;
+  };
+}
+
+export interface BlogResponse {
+  success: boolean;
+  error?: string;
+  blog_post?: BlogPost;
+  workflow_status?: string;
+  iterations?: number;
+  quality_score?: number;
+}
+
+export interface FeedbackRequest {
+  session_id: string;
+  feedback: string;
+  feedback_type: string;
+}
+
+export interface ApprovalRequest {
+  session_id: string;
+  approved: boolean;
+  final_notes?: string;
 }
 
 export interface ChatHistoryResponse {
@@ -71,10 +102,24 @@ export interface ChatHistoryResponse {
     metadata?: any;
   }>;
   current_stage: string;
-  blog_context?: any;
+  blog_context: BlogContext | null;
 }
 
-// API Service Class
+export interface SessionListResponse {
+  sessions: Array<{
+    session_id: string;
+    created_at: string;
+    current_stage: string;
+    message_count: number;
+    has_blog_context: boolean;
+  }>;
+  total_sessions: number;
+}
+
+// ============================================================================
+// API SERVICE CLASS
+// ============================================================================
+
 class ApiService {
   private baseURL: string;
 
@@ -82,138 +127,118 @@ class ApiService {
     this.baseURL = baseURL;
   }
 
-  // Generic fetch wrapper with error handling
-  private async fetchWithErrorHandling<T>(
+  // ========================================================================
+  // HELPER METHODS
+  // ========================================================================
+
+  private async fetchWithRetry(
+    url: string,
+    options: RequestInit,
+    retries = 3
+  ): Promise<Response> {
+    for (let i = 0; i < retries; i++) {
+      try {
+        const response = await fetch(url, options);
+        return response;
+      } catch (error) {
+        if (i === retries - 1) throw error;
+        await new Promise(resolve => setTimeout(resolve, Math.pow(2, i) * 1000));
+      }
+    }
+    throw new Error('Max retries reached');
+  }
+
+  private async request<T>(
     endpoint: string,
     options: RequestInit = {}
   ): Promise<T> {
     try {
-      const response = await fetch(`${this.baseURL}${endpoint}`, {
+      const url = `${this.baseURL}${endpoint}`;
+      console.log(`🌐 API Call: ${options.method || 'GET'} ${url}`);
+
+      const response = await this.fetchWithRetry(url, {
+        ...options,
         headers: {
-          'Content-Type': 'application/json',
+          ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
           ...options.headers,
         },
-        ...options,
+        mode: 'cors',
+        credentials: 'omit',
       });
 
+      console.log(`✅ Response Status: ${response.status}`);
+
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || `HTTP ${response.status}: ${response.statusText}`);
+        let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData.detail || errorData.error || errorMessage;
+        } catch {
+          // Use status text if error response is not JSON
+        }
+        throw new Error(errorMessage);
       }
 
-      return await response.json();
+      const data = await response.json();
+      console.log('✅ Response Data:', data);
+      return data;
     } catch (error) {
-      console.error(`API Error for ${endpoint}:`, error);
+      console.error(`❌ API Error for ${endpoint}:`, error);
+      if (error instanceof TypeError && error.message.includes('fetch')) {
+        throw new Error('Network error: Unable to reach the server. Please check your connection.');
+      }
       throw error;
     }
   }
 
-  // File Upload and Ingestion
-  async uploadFile(file: File): Promise<IngestionResponse> {
-    const formData = new FormData();
-    formData.append('file', file);
+  // ========================================================================
+  // SESSION MANAGEMENT
+  // ========================================================================
 
-    const response = await fetch(`${this.baseURL}/api/ingest`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Upload failed: ${response.statusText}`);
-    }
-
-    return await response.json();
-  }
-
-  // Blog Generation from Text
-  async generateBlogFromText(
-    text: string,
-    targetAudience: string = "General professional audience",
-    tone: string = "Professional and engaging",
-    maxIterations: number = 3
-  ): Promise<BlogResponse> {
-    return this.fetchWithErrorHandling<BlogResponse>('/api/generate-blog', {
-      method: 'POST',
-      body: JSON.stringify({
-        text,
-        target_audience: targetAudience,
-        tone,
-        max_iterations: maxIterations,
-      }),
-    });
-  }
-
-  // Blog Generation from File
-  async generateBlogFromFile(
-    file: File,
-    targetAudience: string = "General professional audience",
-    tone: string = "Professional and engaging",
-    maxIterations: number = 3
-  ): Promise<BlogResponse> {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('target_audience', targetAudience);
-    formData.append('tone', tone);
-    formData.append('max_iterations', maxIterations.toString());
-
-    const response = await fetch(`${this.baseURL}/api/generate-blog-from-file`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `Blog generation failed: ${response.statusText}`);
-    }
-
-    return await response.json();
-  }
-
-  // Multi-file Aggregation
-  async aggregateFiles(
-    files: File[],
-    aggregationStrategy: string = "synthesis",
-    targetAudience: string = "General professional audience",
-    tone: string = "Professional and engaging",
-    maxIterations: number = 3
-  ): Promise<BlogResponse> {
-    const formData = new FormData();
-    
-    files.forEach(file => {
-      formData.append('files', file);
-    });
-    
-    formData.append('aggregation_strategy', aggregationStrategy);
-    formData.append('target_audience', targetAudience);
-    formData.append('tone', tone);
-    formData.append('max_iterations', maxIterations.toString());
-
-    const response = await fetch(`${this.baseURL}/api/aggregate`, {
-      method: 'POST',
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      throw new Error(errorData.detail || `File aggregation failed: ${response.statusText}`);
-    }
-
-    return await response.json();
-  }
-
-  // Chat Session Management
+  /**
+   * Initialize a new chat session
+   * Call on page load or when starting a new conversation
+   */
   async startChatSession(): Promise<ChatSessionResponse> {
-    return this.fetchWithErrorHandling<ChatSessionResponse>('/api/chat/start', {
+    console.log('🚀 Starting new chat session...');
+    return this.request<ChatSessionResponse>('/api/chat/start', {
       method: 'POST',
     });
   }
 
-  async sendChatMessage(
-    message: string,
-    sessionId?: string
-  ): Promise<ChatMessageResponse> {
-    return this.fetchWithErrorHandling<ChatMessageResponse>('/api/chat/message', {
+  /**
+   * Get list of all chat sessions
+   */
+  async getSessions(): Promise<SessionListResponse> {
+    return this.request<SessionListResponse>('/api/chat/sessions');
+  }
+
+  /**
+   * Get conversation history for a specific session
+   */
+  async getChatHistory(sessionId: string): Promise<ChatHistoryResponse> {
+    return this.request<ChatHistoryResponse>(`/api/chat/history/${sessionId}`);
+  }
+
+  /**
+   * Delete a chat session
+   */
+  async deleteSession(sessionId: string): Promise<{ success: boolean; message: string }> {
+    return this.request(`/api/chat/session/${sessionId}`, {
+      method: 'DELETE',
+    });
+  }
+
+  // ========================================================================
+  // MESSAGING
+  // ========================================================================
+
+  /**
+   * Send a text message to the chatbot
+   */
+  async sendMessage(message: string, sessionId: string): Promise<ChatMessageResponse> {
+    console.log(`💬 Sending message to session: ${sessionId}`);
+    return this.request<ChatMessageResponse>('/api/chat/message', {
       method: 'POST',
       body: JSON.stringify({
         message,
@@ -222,16 +247,16 @@ class ApiService {
     });
   }
 
-  async getChatHistory(sessionId: string): Promise<ChatHistoryResponse> {
-    return this.fetchWithErrorHandling<ChatHistoryResponse>(`/api/chat/history/${sessionId}`);
-  }
-
+  /**
+   * Submit feedback for blog refinement
+   */
   async submitFeedback(
     sessionId: string,
     feedback: string,
-    feedbackType: string = "general"
+    feedbackType: string = 'general'
   ): Promise<ChatMessageResponse> {
-    return this.fetchWithErrorHandling<ChatMessageResponse>('/api/chat/feedback', {
+    console.log(`✏️ Submitting feedback for session: ${sessionId}`);
+    return this.request<ChatMessageResponse>('/api/chat/feedback', {
       method: 'POST',
       body: JSON.stringify({
         session_id: sessionId,
@@ -241,12 +266,16 @@ class ApiService {
     });
   }
 
+  /**
+   * Approve or reject blog post
+   */
   async approveBlog(
     sessionId: string,
     approved: boolean,
     finalNotes?: string
   ): Promise<ChatMessageResponse> {
-    return this.fetchWithErrorHandling<ChatMessageResponse>('/api/chat/approve', {
+    console.log(`${approved ? '✅' : '❌'} ${approved ? 'Approving' : 'Rejecting'} blog for session: ${sessionId}`);
+    return this.request<ChatMessageResponse>('/api/chat/approve', {
       method: 'POST',
       body: JSON.stringify({
         session_id: sessionId,
@@ -256,52 +285,86 @@ class ApiService {
     });
   }
 
-  async deleteChatSession(sessionId: string): Promise<{ success: boolean; message: string }> {
-    return this.fetchWithErrorHandling(`/api/chat/session/${sessionId}`, {
-      method: 'DELETE',
+  // ========================================================================
+  // FILE OPERATIONS
+  // ========================================================================
+
+  /**
+   * Upload and ingest a single file
+   */
+  async uploadFile(file: File): Promise<FileIngestionResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+
+    console.log(`📤 Uploading file: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+
+    return this.request<FileIngestionResponse>('/api/ingest', {
+      method: 'POST',
+      body: formData,
     });
   }
 
-  async listChatSessions(): Promise<{
-    sessions: Array<{
-      session_id: string;
-      created_at: string;
-      current_stage: string;
-      message_count: number;
-      has_blog_context: boolean;
-    }>;
-    total_sessions: number;
-  }> {
-    return this.fetchWithErrorHandling('/api/chat/sessions');
+  /**
+   * Generate blog post directly from file upload
+   */
+  async generateBlogFromFile(
+    file: File,
+    targetAudience?: string,
+    tone?: string,
+    maxIterations?: number
+  ): Promise<BlogResponse> {
+    const formData = new FormData();
+    formData.append('file', file);
+    if (targetAudience) formData.append('target_audience', targetAudience);
+    if (tone) formData.append('tone', tone);
+    if (maxIterations) formData.append('max_iterations', maxIterations.toString());
+
+    console.log(`📝 Generating blog from file: ${file.name}`);
+
+    return this.request<BlogResponse>('/api/generate-blog-from-file', {
+      method: 'POST',
+      body: formData,
+    });
   }
 
-  // Health Check
-  async healthCheck(): Promise<{
-    status: string;
-    ingestion_ready: boolean;
-    blog_generation_ready: boolean;
-    chatbot_ready: boolean;
-    multi_file_processing_ready: boolean;
-    active_sessions: number;
-    version: string;
-  }> {
-    return this.fetchWithErrorHandling('/health');
+  /**
+   * Aggregate multiple files into a single blog post
+   */
+  async aggregateFiles(
+    files: File[],
+    strategy: string = 'synthesis',
+    targetAudience?: string,
+    tone?: string
+  ): Promise<BlogResponse> {
+    const formData = new FormData();
+    files.forEach(file => formData.append('files', file));
+    formData.append('aggregation_strategy', strategy);
+    if (targetAudience) formData.append('target_audience', targetAudience);
+    if (tone) formData.append('tone', tone);
+
+    console.log(`📚 Aggregating ${files.length} files with strategy: ${strategy}`);
+
+    return this.request<BlogResponse>('/api/aggregate', {
+      method: 'POST',
+      body: formData,
+    });
   }
 
-  // API Information
-  async getApiInfo(): Promise<{
-    message: string;
-    version: string;
-    description: string;
-    endpoints: Record<string, string>;
-    features: Record<string, string>;
-  }> {
-    return this.fetchWithErrorHandling('/');
+  // ========================================================================
+  // UTILITY
+  // ========================================================================
+
+  /**
+   * Health check for backend
+   */
+  async healthCheck(): Promise<any> {
+    return this.request('/health');
   }
 }
 
-// Create and export a singleton instance
-export const apiService = new ApiService();
+// ============================================================================
+// EXPORT SINGLETON INSTANCE
+// ============================================================================
 
-// Export the class for custom instances if needed
+export const apiService = new ApiService();
 export default ApiService;

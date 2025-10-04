@@ -16,37 +16,23 @@ import shutil
 import sys
 import uuid
 import time
+from datetime import datetime, timedelta
 
 # Import LangSmith configuration
 from langsmith_config import trace_step, verify_langsmith_setup
 
-# Ensure ingestion and blog_generation modules are importable when running API from project root
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-INGESTION_DIR = os.path.join(BASE_DIR, "ingestion")
-BLOG_GEN_DIR = os.path.join(BASE_DIR, "blog_generation")
-
-# Add ingestion first to avoid config conflicts
-if INGESTION_DIR not in sys.path:
-    sys.path.insert(0, INGESTION_DIR)
-
-# Import ingestion modules first
+# Import modules using relative imports (no sys.path manipulation needed)
 from ingestion.unified_processor import UnifiedProcessor
-
-# Then add blog_generation and import its modules
-if BLOG_GEN_DIR not in sys.path:
-    sys.path.insert(0, BLOG_GEN_DIR)
+from ingestion.multi_file_processor import MultiFileProcessor
 
 from blog_generation.workflow import BlogGenerationWorkflow
-from blog_generation.config import BlogGenerationState, ProcessingStatus
+from blog_generation.config import BlogGenerationState, ProcessingStatus, AggregatedBlogGenerationState
 
-# Import chatbot modules
 from chatbot.chatbot_orchastrator import ChatbotOrchestrator
 from chatbot.config import ChatStage, MessageType, ChatMessage
 from chatbot.conversation_memory import ConversationMemoryManager
 
-# Import multi-file processing modules
-from ingestion.multi_file_processor import MultiFileProcessor
-from blog_generation.config import AggregationStrategy, AggregatedBlogGenerationState
+from shared.models import AggregationStrategy
 
 # Helper to make nested structures JSON-safe (e.g., remove bytes)
 def _sanitize_for_json(obj):
@@ -132,6 +118,26 @@ multi_file_processor = MultiFileProcessor()
 # Simple session storage for single-user focus
 active_sessions: Dict[str, Dict[str, Any]] = {}
 
+def cleanup_expired_sessions():
+    """Remove sessions older than 24 hours"""
+    now = datetime.now()
+    expired = []
+    for session_id, session_data in active_sessions.items():
+        try:
+            created_time = datetime.fromtimestamp(session_data["created_at"])
+            if now - created_time > timedelta(hours=24):
+                expired.append(session_id)
+        except (KeyError, ValueError):
+            # If timestamp is invalid, mark for cleanup
+            expired.append(session_id)
+    
+    for session_id in expired:
+        try:
+            del active_sessions[session_id]
+            print(f"🧹 Cleaned up expired session: {session_id}")
+        except KeyError:
+            pass  # Already deleted
+
 # Verify LangSmith setup on startup
 @app.on_event("startup")
 async def startup_event():
@@ -140,6 +146,10 @@ async def startup_event():
         print("🔍 LangSmith monitoring enabled for API endpoints")
     else:
         print("⚠️ LangSmith setup verification failed")
+    
+    # Clean up any existing expired sessions
+    cleanup_expired_sessions()
+    print(f"🚀 API started with {len(active_sessions)} active sessions")
 
 @app.post("/api/ingest")
 @trace_step("api_ingest", "tool")
@@ -459,6 +469,10 @@ async def start_chat_session():
         
         # Store in active sessions
         active_sessions[session_id] = session_data
+        
+        # Clean up expired sessions periodically
+        if len(active_sessions) > 10:  # Only cleanup when we have many sessions
+            cleanup_expired_sessions()
         
         return ChatSessionResponse(
             session_id=session_id,
