@@ -1,16 +1,15 @@
-# Blog Generation Module Dependencies
+# Chatbot Module Dependencies
 # For standalone usage, install these packages
 # For integrated usage, use root requirements.txt
 
 # Core LLM and framework
-langgraph>=0.2.0
 langchain>=0.1.0
-langchain-groq>=0.1.0
-langchain-anthropic>=0.1.0
+langchain-groq>=0.0.1
 langchain-community>=0.0.1
+langgraph>=0.0.20
 
 # Data models
-pydantic>=2.7
+pydantic>=2.0.0
 
 # Environment and utilities
 python-dotenv>=1.0.0
@@ -18,3 +17,7 @@ typing-extensions>=4.5.0
 
 # LangSmith tracing
 langsmith>=0.0.40
+
+# Memory and state management
+# (uses in-memory storage, no additional deps needed)
+

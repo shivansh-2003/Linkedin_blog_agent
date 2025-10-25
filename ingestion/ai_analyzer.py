@@ -1,240 +1,331 @@
-import google.generativeai as genai
-from groq import Groq
-from typing import List
-import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+"""AI-powered content analysis using LLM and vision models"""
 
-from langsmith_config import trace_step, langsmith_client
-from ingestion.config import Config, ExtractedContent, ProcessingModel, ContentType
-from ingestion.prompt_templates import (
-    CODE_SYSTEM_PROMPT,
-    PPT_SYSTEM_PROMPT,
-    build_code_user_prompt,
-    build_ppt_user_prompt,
+import os
+import sys
+from typing import Dict, Any, Optional, List
+import asyncio
+
+# Add parent directory to path for langsmith_config import
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from langsmith_config import trace_step
+
+from langchain_groq import ChatGroq
+from langchain.schema import HumanMessage, SystemMessage
+import google.generativeai as genai
+
+from .config import (
+    ContentType, 
+    ProcessingModel, 
+    ExtractedContent, 
+    AIInsights
 )
 
-class AIAnalyzer:
-    """AI-powered content analysis using Groq and Gemini models"""
+
+class ContentAnalyzer:
+    """Analyzes content using AI models"""
     
     def __init__(self):
-        # Initialize Groq client
-        self.groq_client = Groq(api_key=Config.GROQ_API_KEY)
+        """Initialize AI clients"""
+        # Initialize text analysis client
+        groq_api_key = os.getenv("GROQ_API_KEY")
+        if not groq_api_key:
+            raise ValueError("GROQ_API_KEY environment variable not set")
         
-        # Initialize Gemini
-        genai.configure(api_key=Config.GEMINI_API_KEY)
-        self.gemini_model = genai.GenerativeModel('gemini-2.0-flash')
-    
-    @trace_step("content_analysis", "llm")
-    def analyze_content(self, extracted_content: ExtractedContent) -> tuple[str, List[str]]:
-        """
-        Analyze extracted content with detailed tracing
+        self.text_client = ChatGroq(
+            api_key=groq_api_key,
+            model_name=ProcessingModel.PRIMARY.value,
+            temperature=0.7,
+            max_tokens=2000
+        )
         
-        This trace will show you:
-        - Which content type was analyzed
-        - Processing time for each model call
-        - Input/output token counts
-        - Model selection decisions
-        """
-        
-        if extracted_content.content_type == ContentType.IMAGE:
-            return self._analyze_with_gemini(extracted_content)
-        elif extracted_content.content_type == ContentType.POWERPOINT:
-            # Multimodal: run Gemini on each image, aggregate into the Groq prompt
-            slides = extracted_content.structured_data.get('slides', [])
-            image_captions = []
-            for slide in slides:
-                for img in slide.get('images', []):
-                    try:
-                        response = self.gemini_model.generate_content([
-                            "Provide a brief professional caption and any detected text.",
-                            {"mime_type": img.get("mime_type", "image/png"), "data": img.get("image_bytes")}
-                        ])
-                        caption = response.text if hasattr(response, 'text') else str(response)
-                        image_captions.append({
-                            "slide": slide.get('slide_number'),
-                            "caption": caption[:500]
-                        })
-                    except Exception:
-                        continue
-            # Attach image captions to structured_data for downstream prompt
-            extracted_content.structured_data["image_captions"] = image_captions
-            return self._analyze_with_groq(extracted_content)
+        # Initialize vision client for images
+        gemini_api_key = os.getenv("GEMINI_API_KEY")
+        if gemini_api_key:
+            genai.configure(api_key=gemini_api_key)
+            self.vision_client = genai.GenerativeModel(ProcessingModel.VISION.value)
         else:
-            return self._analyze_with_groq(extracted_content)
+            self.vision_client = None
     
-    def _analyze_with_groq(self, extracted_content: ExtractedContent) -> tuple[str, List[str]]:
-        """Analyze content using Groq models with robust fallbacks"""
+    @trace_step("analyze_content", "llm")
+    async def analyze(
+        self, 
+        content: ExtractedContent,
+        content_type: ContentType
+    ) -> AIInsights:
+        """Main analysis dispatcher"""
         
-        # Select appropriate model
-        model = extracted_content.processing_model.value
-        
-        # Create analysis prompt based on content type
-        prompt = self._create_analysis_prompt(extracted_content)
-        
-        def _analyze_with_model(model_name: str) -> tuple[str, List[str]]:
-            response = self.groq_client.chat.completions.create(
-                model=model_name,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": (
-                            CODE_SYSTEM_PROMPT if extracted_content.content_type == ContentType.CODE else PPT_SYSTEM_PROMPT
-                        )
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                max_tokens=2000,
-                temperature=0.35
-            )
-            analysis_local = response.choices[0].message.content
-            insights_local = self._extract_insights(analysis_local)
-            return analysis_local, insights_local
-
-        # Build ordered list of models to try: primary then fallbacks (env may override)
-        fallback_env = (Config.__dict__.get("GROQ_FALLBACK_MODELS") or "").strip()
-        env_models = [m.strip() for m in fallback_env.split(",") if m.strip()] if fallback_env else []
-        candidates = [model] + env_models + [
-            ProcessingModel.GROQ_LLAMA_8B.value,
-            ProcessingModel.GROQ_GEMMA.value,
-        ]
-
-        last_error: str | None = None
-        for candidate in candidates:
-            try:
-                return _analyze_with_model(candidate)
-            except Exception as e:  # Try next candidate
-                last_error = str(e)
-                continue
-        return f"Analysis failed: {last_error}", []
+        if content_type == ContentType.IMAGE:
+            return await self._analyze_image(content)
+        else:
+            return await self._analyze_text(content, content_type)
     
-    def _analyze_with_gemini(self, extracted_content: ExtractedContent) -> tuple[str, List[str]]:
-        """Analyze visual content using Gemini"""
+    @trace_step("analyze_text", "llm")
+    async def _analyze_text(
+        self,
+        content: ExtractedContent,
+        content_type: ContentType
+    ) -> AIInsights:
+        """Analyze text-based content"""
+        
         try:
-            # We expect structured_data to include either 'image_bytes' or 'image_url'
-            image_bytes = extracted_content.structured_data.get('image_bytes')
-            image_url = extracted_content.structured_data.get('image_url')
-
-            prompt = (
-                "You are an expert visual content analyst for professional posts. "
-                "Describe the image succinctly, extract any text, identify charts/diagrams, "
-                "and propose 3-5 LinkedIn post angles with hashtags."
-            )
-
-            if image_bytes is not None:
-                response = self.gemini_model.generate_content([
-                    prompt,
-                    {"mime_type": extracted_content.metadata.get("mime_type", "image/png"), "data": image_bytes}
-                ])
-            elif image_url is not None:
-                response = self.gemini_model.generate_content([prompt, image_url])
-            else:
-                return "No image data provided for analysis.", []
-
-            analysis = response.text if hasattr(response, 'text') else str(response)
-            insights = self._extract_insights(analysis)
-            return analysis, insights
+            # Build context-specific prompts
+            system_prompt = self._build_system_prompt(content_type)
+            user_prompt = self._build_analysis_prompt(content, content_type)
+            
+            # Create messages
+            messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt)
+            ]
+            
+            # Get AI response with fallback
+            response = await self._get_response_with_fallback(messages)
+            
+            # Parse response into structured insights
+            insights = self._parse_insights(response)
+            
+            return insights
+            
         except Exception as e:
-            return f"Gemini analysis failed: {str(e)}", []
+            print(f"Warning: AI analysis failed: {str(e)}")
+            return self._create_fallback_insights(content)
     
-    def _create_analysis_prompt(self, extracted_content: ExtractedContent) -> str:
-        """Create analysis prompt based on content type"""
+    @trace_step("analyze_image", "llm")
+    async def _analyze_image(self, content: ExtractedContent) -> AIInsights:
+        """Analyze image content using vision AI"""
         
-        base_info = f"""
-Content Type: {extracted_content.content_type.value}
-File: {extracted_content.file_path}
-Length: {len(extracted_content.raw_text)} characters
+        if not self.vision_client:
+            return AIInsights(
+                main_topics=["Image Analysis"],
+                key_insights=["Vision AI not configured"],
+                professional_context="Visual content provided",
+                linkedin_angles=["Share visual insights"]
+            )
+        
+        try:
+            # Get image data
+            image_b64 = content.structured_data.get("image_base64")
+            mime_type = content.structured_data.get("mime_type", "image/jpeg")
+            
+            if not image_b64:
+                raise ValueError("No image data found")
+            
+            # Prepare vision prompt
+            prompt = """Analyze this image for professional LinkedIn content:
+
+1. What is shown in the image? (charts, diagrams, photos, etc.)
+2. What text or data is visible?
+3. What professional insights can be derived?
+4. What audience would find this valuable?
+5. What are 3 potential LinkedIn post angles?
+
+Provide a structured analysis."""
+            
+            # Create image part
+            image_part = {
+                "mime_type": mime_type,
+                "data": image_b64
+            }
+            
+            # Get vision response
+            response = await asyncio.to_thread(
+                self.vision_client.generate_content,
+                [prompt, image_part]
+            )
+            
+            # Parse vision response
+            insights = self._parse_vision_response(response.text)
+            
+            return insights
+            
+        except Exception as e:
+            print(f"Warning: Image analysis failed: {str(e)}")
+            return AIInsights(
+                main_topics=["Visual Content"],
+                key_insights=["Image analysis unavailable"],
+                professional_context="Visual content provided",
+                linkedin_angles=["Share visual insights with audience"]
+            )
+    
+    @trace_step("llm_response_with_fallback", "llm")
+    async def _get_response_with_fallback(
+        self, 
+        messages: List[Any]
+    ) -> str:
+        """Try primary model, fallback to alternatives if needed"""
+        
+        models = [
+            ProcessingModel.PRIMARY.value,
+            ProcessingModel.FAST.value,
+            ProcessingModel.FALLBACK.value
+        ]
+        
+        last_error = None
+        
+        for model_name in models:
+            try:
+                # Update model
+                self.text_client.model_name = model_name
+                
+                # Get response
+                response = await asyncio.to_thread(
+                    self.text_client.invoke,
+                    messages
+                )
+                
+                return response.content
+                
+            except Exception as e:
+                last_error = e
+                print(f"Model {model_name} failed, trying next...")
+                continue
+        
+        raise RuntimeError(f"All models failed. Last error: {str(last_error)}")
+    
+    def _build_system_prompt(self, content_type: ContentType) -> str:
+        """Build system prompt based on content type"""
+        
+        base = """You are an expert content analyst specializing in transforming professional content into engaging LinkedIn posts. Your analysis should identify key insights, audience relevance, and content angles suitable for LinkedIn."""
+        
+        type_specific = {
+            ContentType.PDF: "Focus on extracting main arguments, key findings, and actionable takeaways from documents.",
+            ContentType.WORD: "Identify core messages, structure, and professional insights suitable for social sharing.",
+            ContentType.POWERPOINT: "Extract key points from presentation slides, focusing on visual storytelling and main messages.",
+            ContentType.CODE: "Analyze code for technical insights, best practices, architectural patterns, and learning opportunities for developers.",
+            ContentType.TEXT: "Extract main ideas, professional insights, and shareable knowledge from the text.",
+            ContentType.MARKDOWN: "Parse structured content, identify key sections, and extract shareable professional insights."
+        }
+        
+        return f"{base}\n\n{type_specific.get(content_type, base)}"
+    
+    def _build_analysis_prompt(
+        self,
+        content: ExtractedContent,
+        content_type: ContentType
+    ) -> str:
+        """Build analysis prompt with content"""
+        
+        # Truncate content if too long (keep first and last parts)
+        max_length = 8000
+        text = content.content
+        
+        if len(text) > max_length:
+            half = max_length // 2
+            text = f"{text[:half]}\n\n[... content truncated ...]\n\n{text[-half:]}"
+        
+        prompt = f"""Analyze the following {content_type.value} content and provide:
+
+1. **Main Topics** (3-5 key topics/themes)
+2. **Key Insights** (3-5 most important takeaways)
+3. **Target Audience** (who would benefit from this)
+4. **Professional Context** (why this matters professionally)
+5. **LinkedIn Angles** (3-5 potential post angles)
+6. **Technical Depth** (beginner/intermediate/advanced)
+7. **Tone Suggestions** (how to present this content)
 
 Content:
-{extracted_content.raw_text[:2000]}{'...' if len(extracted_content.raw_text) > 2000 else ''}
-"""
+{text}
+
+Metadata: {content.metadata}
+
+Provide a structured response with clear sections."""
         
-        if extracted_content.content_type == ContentType.PDF:
-            return f"""{base_info}
-
-Analyze this PDF document and provide:
-1. Main topics and themes
-2. Key insights and takeaways  
-3. Document structure and organization
-4. Potential LinkedIn blog angles
-5. Target audience recommendations
-
-Metadata: {extracted_content.metadata}"""
-
-        elif extracted_content.content_type == ContentType.CODE:
-            return build_code_user_prompt(
-                base_info,
-                extracted_content.structured_data.get('analysis', {})
-            )
-
-        elif extracted_content.content_type == ContentType.POWERPOINT:
-            slides = extracted_content.structured_data.get('slides', [])
-            # Summarize images and captions compactly to keep prompt small
-            images_summary = []
-            for s in slides[:10]:
-                if s.get('images'):
-                    images_summary.append({
-                        "slide": s.get('slide_number'),
-                        "images_count": len(s['images'])
-                    })
-            image_captions = extracted_content.structured_data.get('image_captions', [])[:10]
-            for ic in image_captions:
-                if isinstance(ic.get('caption'), str) and len(ic['caption']) > 500:
-                    ic['caption'] = ic['caption'][:500] + '...'
-            return build_ppt_user_prompt(
-                base_info,
-                images_summary,
-                image_captions,
-                extracted_content.structured_data.get('presentation_metadata', {})
-            )
-
-        elif extracted_content.content_type == ContentType.WORD:
-            return f"""{base_info}
-
-Analyze this document and provide:
-1. Document purpose and main arguments
-2. Key insights and professional takeaways
-3. Industry relevance and trends mentioned
-4. LinkedIn engagement opportunities
-5. Target professional audience"""
-
-        else:  # TEXT
-            return f"""{base_info}
-
-Analyze this text content and provide:
-1. Main themes and topics covered
-2. Professional insights and learnings
-3. Industry relevance and applications
-4. LinkedIn content opportunities
-5. Engagement potential and target audience"""
+        return prompt
     
-    def _extract_insights(self, analysis_text: str) -> List[str]:
-        """Extract key insights from analysis text"""
-        insights = []
+    @trace_step("parse_insights", "tool")
+    def _parse_insights(self, response: str) -> AIInsights:
+        """Parse AI response into structured insights"""
         
-        # Simple extraction - look for numbered points or bullet points
-        lines = analysis_text.split('\n')
+        # Simple parsing - extract sections
+        lines = response.split('\n')
+        
+        insights = AIInsights()
+        current_section = None
         
         for line in lines:
             line = line.strip()
-            # Look for numbered insights or bullet points
-            if line and (line[0].isdigit() or line.startswith('-') or line.startswith('•')):
-                # Clean up the insight
-                insight = line.lstrip('0123456789.-• ').strip()
-                if len(insight) > 10:  # Filter out very short insights
-                    insights.append(insight)
-        
-        # If no structured insights found, try to extract sentences with key phrases
-        if not insights:
-            key_phrases = ['key insight', 'important', 'significant', 'notable', 'main', 'primary']
-            sentences = analysis_text.split('.')
+            if not line:
+                continue
             
-            for sentence in sentences:
-                sentence = sentence.strip()
-                if any(phrase in sentence.lower() for phrase in key_phrases) and len(sentence) > 20:
-                    insights.append(sentence + '.')
+            # Detect sections
+            lower = line.lower()
+            if 'main topic' in lower or 'key topic' in lower:
+                current_section = 'topics'
+            elif 'key insight' in lower or 'takeaway' in lower:
+                current_section = 'insights'
+            elif 'target audience' in lower or 'audience' in lower:
+                current_section = 'audience'
+            elif 'professional context' in lower or 'context' in lower:
+                current_section = 'context'
+            elif 'linkedin angle' in lower or 'post angle' in lower:
+                current_section = 'angles'
+            elif 'technical depth' in lower or 'depth' in lower:
+                current_section = 'depth'
+            elif 'tone' in lower:
+                current_section = 'tone'
+            elif line.startswith(('-', '•', '*', '1.', '2.', '3.')):
+                # It's a list item
+                item = line.lstrip('-•*123456789. ').strip()
+                if item:
+                    if current_section == 'topics':
+                        insights.main_topics.append(item)
+                    elif current_section == 'insights':
+                        insights.key_insights.append(item)
+                    elif current_section == 'angles':
+                        insights.linkedin_angles.append(item)
+                    elif current_section == 'tone':
+                        insights.tone_suggestions.append(item)
+            else:
+                # Regular text - might be audience or context
+                if current_section == 'audience' and not insights.target_audience:
+                    insights.target_audience = line
+                elif current_section == 'context' and not insights.professional_context:
+                    insights.professional_context = line
+                elif current_section == 'depth' and not insights.technical_depth:
+                    if any(word in lower for word in ['beginner', 'basic', 'intro']):
+                        insights.technical_depth = "beginner"
+                    elif any(word in lower for word in ['advanced', 'expert', 'deep']):
+                        insights.technical_depth = "advanced"
+                    else:
+                        insights.technical_depth = "intermediate"
         
-        return insights[:5]  # Return top 5 insights
+        # Ensure we have some content
+        if not insights.main_topics:
+            insights.main_topics = ["General professional content"]
+        if not insights.key_insights:
+            insights.key_insights = ["Content provides valuable professional insights"]
+        if not insights.target_audience:
+            insights.target_audience = "Professional audience"
+        if not insights.linkedin_angles:
+            insights.linkedin_angles = ["Share knowledge with network"]
+        
+        return insights
+    
+    def _parse_vision_response(self, response: str) -> AIInsights:
+        """Parse vision AI response"""
+        
+        # Similar parsing to text
+        return self._parse_insights(response)
+    
+    def _create_fallback_insights(self, content: ExtractedContent) -> AIInsights:
+        """Create basic insights when AI fails"""
+        
+        return AIInsights(
+            main_topics=["Professional Content"],
+            key_insights=[
+                "Content analysis in progress",
+                "Professional insights to be extracted"
+            ],
+            target_audience="Professional network",
+            professional_context="Valuable professional content for sharing",
+            linkedin_angles=[
+                "Share expertise with network",
+                "Provide value to connections"
+            ],
+            technical_depth="intermediate",
+            tone_suggestions=["Professional", "Informative"]
+        )
+
+
+# Export
+__all__ = ['ContentAnalyzer']

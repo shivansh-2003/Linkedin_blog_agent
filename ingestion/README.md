@@ -78,7 +78,7 @@ print(f"Processed {summary['successful']}/{summary['total_files']} files")
 
 ```python
 from ingestion.multi_file_processor import MultiFileProcessor
-from blog_generation.config import AggregationStrategy
+from shared.models import AggregationStrategy
 
 processor = MultiFileProcessor()
 result = await processor.process_multiple_files(

@@ -1,12 +1,17 @@
 import streamlit as st
-import requests
+import asyncio
 import json
+import os
+import tempfile
 from datetime import datetime
 from pathlib import Path
 import time
 
-# Backend API URL
-API_BASE_URL = "https://linkedin-blog-agent-1.onrender.com"
+# Local module imports
+from ingestion import UnifiedProcessor, MultiProcessor, ProcessedContent, AggregatedContent
+from blog_generation import BlogWorkflow, BlogGenerationState, BlogPost
+from chatbot import ChatbotOrchestrator
+from shared.models import AggregationStrategy
 
 # Page configuration
 st.set_page_config(
@@ -143,52 +148,6 @@ st.markdown("""
         margin-bottom: 1rem;
     }
     
-    .post-engagement {
-        display: flex;
-        justify-content: space-around;
-        padding: 0.5rem 0;
-        border-top: 1px solid var(--linkedin-gray-2);
-        margin-top: 1rem;
-    }
-    
-    .engagement-button {
-        background: none;
-        border: none;
-        color: #666;
-        cursor: pointer;
-        padding: 0.5rem;
-        border-radius: 4px;
-        transition: background-color 0.2s;
-    }
-    
-    .engagement-button:hover {
-        background-color: var(--linkedin-gray-1);
-    }
-    
-    /* Smooth scrolling for chat */
-    .stChatFloatingInputContainer {
-        bottom: 20px;
-        background-color: white;
-        border-top: 1px solid #e0e0e0;
-        padding: 1rem;
-    }
-    
-    /* Chat input styling */
-    .stChatInput > div {
-        border-radius: 24px !important;
-        border: 2px solid #0A66C2 !important;
-    }
-    
-    /* Message animations */
-    .stChatMessage {
-        animation: fadeIn 0.3s ease-in;
-    }
-    
-    @keyframes fadeIn {
-        from { opacity: 0; transform: translateY(10px); }
-        to { opacity: 1; transform: translateY(0); }
-    }
-    
     /* Draft action buttons */
     .stButton button[kind="primary"] {
         background: linear-gradient(135deg, #667eea 0%, #764ba2 100%) !important;
@@ -222,40 +181,52 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Initialize session state
-if 'session_id' not in st.session_state:
-    st.session_state.session_id = None
+if 'chatbot' not in st.session_state:
+    st.session_state.chatbot = None
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 if 'current_blog' not in st.session_state:
     st.session_state.current_blog = None
-if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = "🏠 Home"
 if 'messages' not in st.session_state:
     st.session_state.messages = []
 if 'chat_input_key' not in st.session_state:
     st.session_state.chat_input_key = 0
+if 'transfer_to_chat' not in st.session_state:
+    st.session_state.transfer_to_chat = None
+if 'active_tab' not in st.session_state:
+    st.session_state.active_tab = 0
 
 # Helper functions
-def make_api_request(endpoint, method="GET", data=None, files=None):
-    """Make API request to backend"""
-    url = f"{API_BASE_URL}{endpoint}"
-    try:
-        if method == "GET":
-            response = requests.get(url)
-        elif method == "POST":
-            if files:
-                response = requests.post(url, data=data, files=files)
-            else:
-                response = requests.post(url, json=data)
-        elif method == "DELETE":
-            response = requests.delete(url)
-        
-        if response.status_code == 200:
-            return response.json(), None
-        else:
-            return None, f"Error: {response.status_code} - {response.text}"
-    except Exception as e:
-        return None, f"Connection error: {str(e)}"
+def save_uploaded_file(uploaded_file) -> str:
+    """Save Streamlit uploaded file to temp directory"""
+    temp_dir = tempfile.gettempdir()
+    file_path = os.path.join(temp_dir, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
+    return file_path
+
+def convert_processed_to_state(processed: ProcessedContent, requirements: str, max_iterations: int = 3) -> BlogGenerationState:
+    """Convert ingestion output to blog generation input"""
+    return BlogGenerationState(
+        source_content=processed.raw_content,
+        content_insights=processed.insights.key_insights if processed.insights else [],
+        user_requirements=requirements,
+        max_iterations=max_iterations
+    )
+
+def convert_aggregated_to_state(aggregated: AggregatedContent, requirements: str, max_iterations: int = 3) -> BlogGenerationState:
+    """Convert multi-file output to blog generation input"""
+    all_insights = []
+    for source in aggregated.sources:
+        if source.insights and source.insights.key_insights:
+            all_insights.extend(source.insights.key_insights[:3])
+    
+    return BlogGenerationState(
+        source_content=aggregated.unified_insights,
+        content_insights=all_insights[:10],
+        user_requirements=requirements,
+        max_iterations=max_iterations
+    )
 
 def display_error(error_message, suggestion=None):
     """Display actionable error message with suggestions"""
@@ -268,16 +239,25 @@ def display_error(error_message, suggestion=None):
         with st.expander("🔍 Troubleshooting"):
             st.markdown("""
             **Common solutions:**
-            - Check your internet connection
+            - Check your API keys (GROQ_API_KEY in .env)
             - Try a smaller file (max 50MB)
             - Refresh the page and try again
-            - Contact support if issue persists
+            - Check console for detailed error messages
             """)
         
         if st.button("🔄 Try Again"):
             st.rerun()
 
-def display_blog_post(blog_data, quality_score=None):
+def get_quality_color(score):
+    """Get color for quality score"""
+    if score >= 7:
+        return "#057642"  # Green
+    elif score >= 5:
+        return "#915907"  # Yellow
+    else:
+        return "#CC1016"  # Red
+
+def display_blog_post(blog_data, quality_score=None, show_quality=True):
     """Display blog post in LinkedIn-like format"""
     st.markdown('<div class="linkedin-post">', unsafe_allow_html=True)
     
@@ -291,41 +271,49 @@ def display_blog_post(blog_data, quality_score=None):
     
     st.markdown("---")
     
+    # Handle both dict and Pydantic model
+    if hasattr(blog_data, 'model_dump'):
+        blog_dict = blog_data.model_dump()
+    elif isinstance(blog_data, dict):
+        blog_dict = blog_data
+    else:
+        blog_dict = {}
+    
     # Post content
-    if blog_data.get('hook'):
-        st.markdown(f"**{blog_data.get('hook', '')}**")
+    if blog_dict.get('hook'):
+        st.markdown(f"**{blog_dict.get('hook', '')}**")
         st.markdown("")
     
-    if blog_data.get('content'):
-        st.markdown(blog_data.get('content', ''))
+    if blog_dict.get('content'):
+        st.markdown(blog_dict.get('content', ''))
         st.markdown("")
     
-    if blog_data.get('call_to_action'):
-        st.markdown(f"**{blog_data.get('call_to_action', '')}**")
+    if blog_dict.get('call_to_action'):
+        st.markdown(f"**{blog_dict.get('call_to_action', '')}**")
         st.markdown("")
     
     # Hashtags
-    if blog_data.get('hashtags'):
-        st.caption(" ".join(blog_data.get('hashtags', [])))
+    if blog_dict.get('hashtags'):
+        st.caption(" ".join(blog_dict.get('hashtags', [])))
     
-    st.markdown("---")
-    
-    # Engagement section
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.button("👍 Like", key=f"like_{id(blog_data)}")
-    with col2:
-        st.button("💬 Comment", key=f"comment_{id(blog_data)}")
-    with col3:
-        st.button("🔄 Repost", key=f"repost_{id(blog_data)}")
-    with col4:
-        st.button("📤 Share", key=f"share_{id(blog_data)}")
-    
-    # Quality score (if provided)
-    if quality_score:
-        st.info(f"📊 Quality Score: {quality_score}/10")
+    # Quality score (if provided and show_quality is True)
+    if show_quality and quality_score:
+        color = get_quality_color(quality_score)
+        st.markdown(f"""
+        <div style='background-color: {color}15; border-left: 4px solid {color}; 
+                    padding: 0.75rem; border-radius: 4px; margin-top: 1rem;'>
+            <span style='color: {color}; font-weight: 600; font-size: 1.1rem;'>
+                📊 Quality Score: {quality_score}/10
+            </span>
+        </div>
+        """, unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)
+
+def check_api_keys():
+    """Check if required API keys are configured"""
+    groq_key = os.getenv("GROQ_API_KEY")
+    return groq_key is not None
 
 # Sidebar
 with st.sidebar:
@@ -333,30 +321,17 @@ with st.sidebar:
     st.title("LinkedIn Blog Assistant")
     st.markdown("---")
     
-    # Navigation
-    st.markdown("### 🧭 Navigation")
-    st.markdown("""
-    - 🏠 **Home** - Overview and quick start
-    - 📁 **File Upload** - Single file processing
-    - 💬 **Chatbot** - Interactive AI assistant
-    - 📊 **Multi-File** - Multiple file aggregation
-    - ℹ️ **About** - Documentation and help
-    """)
+    # System Status
+    st.subheader("🔌 System Status")
+    if check_api_keys():
+        st.success("✅ API Keys Configured")
+        st.caption("Mode: Local Processing")
+    else:
+        st.error("❌ API Keys Missing")
+        st.caption("Set GROQ_API_KEY in .env")
     
     st.markdown("---")
-    
-    # API Status
-    st.subheader("🔌 API Status")
-    with st.spinner("Checking..."):
-        health_data, error = make_api_request("/health")
-        if health_data:
-            st.success("✅ Connected")
-            st.caption(f"Version: {health_data.get('version', 'Unknown')}")
-        else:
-            st.error("❌ Disconnected")
-    
-    st.markdown("---")
-    st.caption("© 2024 LinkedIn Blog Assistant")
+    st.caption("© 2024 LinkedIn Blog Assistant v2.0")
 
 # Main content area with tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
@@ -467,147 +442,157 @@ with tab2:
         
         st.markdown('</div>', unsafe_allow_html=True)
         
-        # Preview for text files
-        if uploaded_file.type in ["text/plain", "text/markdown"]:
-            with st.expander("📄 Preview Content"):
-                try:
-                    content = uploaded_file.read().decode('utf-8')
-                    preview = content[:500] + "..." if len(content) > 500 else content
-                    st.text(preview)
-                    uploaded_file.seek(0)  # Reset file pointer
-                except:
-                    st.warning("Could not preview file content")
-        
         if st.button("🚀 Generate Blog Post", type="primary"):
-            # Enhanced loading with progress bar
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Step 1: Upload
-            status_text.text("📤 Uploading file...")
-            progress_bar.progress(25)
-            time.sleep(0.5)
-            
-            # Save uploaded file temporarily
-            temp_path = f"/tmp/{uploaded_file.name}"
-            with open(temp_path, "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            # Step 2: Process
-            status_text.text("🔍 Analyzing content...")
-            progress_bar.progress(50)
-            
-            # Upload and generate blog
-            files = {'file': (uploaded_file.name, uploaded_file.getvalue())}
-            data = {
-                'target_audience': target_audience,
-                'tone': tone,
-                'max_iterations': max_iterations
-            }
-            
-            result, error = make_api_request(
-                "/api/generate-blog-from-file",
-                method="POST",
-                data=data,
-                files=files
-            )
-            
-            # Step 3: Generate
-            status_text.text("✨ Generating blog post...")
-            progress_bar.progress(75)
-            time.sleep(0.5)
-            
-            # Step 4: Complete
-            status_text.text("✅ Complete!")
-            progress_bar.progress(100)
-            time.sleep(0.5)
-            progress_bar.empty()
-            status_text.empty()
-            
-            if result and result.get('success'):
-                st.markdown('<div class="success-message">✅ Blog post generated successfully!</div>', unsafe_allow_html=True)
+            if not check_api_keys():
+                display_error("API keys not configured", "Please set GROQ_API_KEY in your .env file")
+            else:
+                # Enhanced loading with progress bar
+                progress_bar = st.progress(0)
+                status_text = st.empty()
                 
-                # Display results
-                blog_post = result.get('blog_post')
-                if blog_post:
-                    display_blog_post(blog_post, result.get('quality_score'))
+                try:
+                    # Step 1: Save file
+                    status_text.text("📤 Processing...")
+                    progress_bar.progress(30)
                     
-                    # Download option
-                    st.markdown("---")
-                    col1, col2 = st.columns(2)
+                    file_path = save_uploaded_file(uploaded_file)
                     
-                    with col1:
-                        blog_text = f"""LinkedIn Blog Post
+                    # Step 2: Process
+                    status_text.text("🔍 Analyzing content...")
+                    progress_bar.progress(60)
+                    
+                    processor = UnifiedProcessor()
+                    processed = asyncio.run(processor.process_file(file_path))
+                    
+                    if not processed.success:
+                        raise Exception(processed.error_message or "File processing failed")
+                    
+                    # Step 3: Generate
+                    status_text.text("✨ Generating blog post...")
+                    progress_bar.progress(90)
+                    
+                    requirements = f"Target audience: {target_audience}. Tone: {tone}."
+                    state = convert_processed_to_state(processed, requirements, max_iterations)
+                    
+                    workflow = BlogWorkflow()
+                    result = workflow.run(state)
+                    
+                    # Complete
+                    status_text.text("✅ Complete!")
+                    progress_bar.progress(100)
+                    time.sleep(0.3)
+                    progress_bar.empty()
+                    status_text.empty()
+                    
+                    if result.generation_complete and result.final_blog:
+                        st.markdown('<div class="success-message">✅ Blog post generated successfully!</div>', unsafe_allow_html=True)
+                        
+                        blog_post = result.final_blog
+                        quality_score = result.latest_critique.quality_score if result.latest_critique else None
+                        
+                        display_blog_post(blog_post, quality_score, show_quality=True)
+                        
+                        # Action buttons
+                        st.markdown("---")
+                        col1, col2, col3 = st.columns(3)
+                        
+                        with col1:
+                            blog_dict = blog_post.model_dump()
+                            blog_text = f"""LinkedIn Blog Post
 {'=' * 50}
 
-Title: {blog_post.get('title', '')}
+Title: {blog_dict.get('title', '')}
 
-Hook: {blog_post.get('hook', '')}
+Hook: {blog_dict.get('hook', '')}
 
 Content:
-{blog_post.get('content', '')}
+{blog_dict.get('content', '')}
 
-Call-to-Action: {blog_post.get('call_to_action', '')}
+Call-to-Action: {blog_dict.get('call_to_action', '')}
 
-Hashtags: {' '.join(blog_post.get('hashtags', []))}
+Hashtags: {' '.join(blog_dict.get('hashtags', []))}
 
-Target Audience: {blog_post.get('target_audience', '')}
+Target Audience: {blog_dict.get('target_audience', '')}
 """
-                        st.download_button(
-                            "📥 Download Blog Post",
-                            blog_text,
-                            file_name=f"linkedin_post_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
-                            mime="text/plain"
-                        )
-                    
-                    with col2:
-                        if st.button("🔄 Generate Another Version"):
-                            st.rerun()
-            else:
-                # Enhanced error display
-                if "Connection error" in str(error):
-                    display_error(
-                        "Unable to connect to the server", 
-                        "Please check your internet connection and try again"
-                    )
-                elif "500" in str(error):
-                    display_error(
-                        "Server error occurred", 
-                        "The server is temporarily unavailable. Please try again in a few minutes"
-                    )
-                elif "413" in str(error) or "too large" in str(error).lower():
-                    display_error(
-                        "File too large", 
-                        "Please upload a file smaller than 50MB or compress your file first"
-                    )
-                else:
-                    display_error(
-                        error or "Generation failed", 
-                        "Please try again or contact support if the issue persists"
-                    )
+                            st.download_button(
+                                "📥 Download (TXT)",
+                                blog_text,
+                                file_name=f"linkedin_post_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt",
+                                mime="text/plain",
+                                use_container_width=True
+                            )
+                        
+                        with col2:
+                            # Continue in chat button
+                            if st.button("💬 Continue in Chat", use_container_width=True, type="primary"):
+                                # Store blog for transfer
+                                st.session_state.transfer_to_chat = {
+                                    'blog': blog_post,
+                                    'quality_score': quality_score,
+                                    'source': 'file_upload'
+                                }
+                                st.success("✅ Transferred to chat!")
+                                time.sleep(0.5)
+                                st.switch_page
+                                st.rerun()
+                        
+                        with col3:
+                            if st.button("🔄 Generate Another", use_container_width=True):
+                                st.rerun()
+                    else:
+                        error_msg = result.last_error or "Generation failed - no blog produced"
+                        display_error(error_msg, "Try adjusting your content or increasing max iterations")
+                
+                except Exception as e:
+                    progress_bar.empty()
+                    status_text.empty()
+                    display_error(str(e), "Please try again or check your input file")
 
 with tab3:
     st.markdown("## 💬 Conversational Blog Assistant")
+    
+    # Check for transfer from other tabs
+    if st.session_state.transfer_to_chat:
+        if not st.session_state.chatbot:
+            st.session_state.chatbot = ChatbotOrchestrator()
+        
+        transfer_data = st.session_state.transfer_to_chat
+        st.info(f"📝 Continuing with blog from {transfer_data['source'].replace('_', ' ').title()}")
+        
+        # Set current blog
+        st.session_state.current_blog = {
+            'current_blog': transfer_data['blog']
+        }
+        
+        # Clear transfer
+        st.session_state.transfer_to_chat = None
     
     # Top bar with session controls
     col1, col2, col3 = st.columns([3, 1, 1])
     
     with col1:
-        if st.session_state.session_id:
-            st.success(f"🟢 Active Session: `{st.session_state.session_id[:8]}...`")
+        if st.session_state.chatbot:
+            st.success("🟢 Active Chat Session")
         else:
-            st.info("🔵 No active session - Starting new session...")
+            st.info("🔵 No active session - Click 'New Session' to start")
     
     with col2:
         if st.button("🆕 New Session", use_container_width=True):
-            result, error = make_api_request("/api/chat/start", method="POST")
-            if result:
-                st.session_state.session_id = result.get('session_id')
-                st.session_state.messages = []
-                st.session_state.chat_history = []
-                st.success("✅ New session started!")
-                time.sleep(0.5)
-                st.rerun()
+            if not check_api_keys():
+                st.error("⚠️ API keys not configured")
+            else:
+                try:
+                    st.session_state.chatbot = ChatbotOrchestrator()
+                    st.session_state.messages = []
+                    st.session_state.chat_history = []
+                    st.session_state.current_blog = None
+                    st.success("✅ New session started!")
+                    time.sleep(0.5)
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to start session: {str(e)}")
+                    if st.button("🔄 Retry Session"):
+                        st.rerun()
     
     with col3:
         if st.button("🗑️ Clear", use_container_width=True):
@@ -615,13 +600,14 @@ with tab3:
             st.session_state.chat_history = []
             st.rerun()
     
-    # Start session if needed
-    if not st.session_state.session_id:
-        with st.spinner("Initializing session..."):
-            result, error = make_api_request("/api/chat/start", method="POST")
-            if result:
-                st.session_state.session_id = result.get('session_id')
+    # Initialize chatbot if needed
+    if not st.session_state.chatbot and check_api_keys():
+        with st.spinner("Initializing chatbot..."):
+            try:
+                st.session_state.chatbot = ChatbotOrchestrator()
                 st.rerun()
+            except Exception as e:
+                st.error(f"Failed to initialize chatbot: {str(e)}")
     
     st.divider()
     
@@ -642,41 +628,7 @@ with tab3:
         </div>
         """, unsafe_allow_html=True)
     
-    # Chat messages container with custom styling
-    st.markdown("""
-        <style>
-        .chat-container {
-            height: 500px;
-            overflow-y: auto;
-            padding: 1rem;
-            background-color: #f8f9fa;
-            border-radius: 8px;
-            margin-bottom: 1rem;
-        }
-        
-        .stChatMessage {
-            background-color: white;
-            border-radius: 8px;
-            padding: 1rem;
-            margin-bottom: 0.5rem;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }
-        
-        .stChatMessage[data-testid="user-message"] {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            margin-left: 2rem;
-        }
-        
-        .stChatMessage[data-testid="assistant-message"] {
-            background-color: white;
-            margin-right: 2rem;
-            border-left: 4px solid #0A66C2;
-        }
-        </style>
-    """, unsafe_allow_html=True)
-    
-    # Display chat messages using st.chat_message (native Streamlit)
+    # Display chat messages
     chat_container = st.container()
     with chat_container:
         for idx, msg in enumerate(st.session_state.messages):
@@ -684,6 +636,7 @@ with tab3:
                 st.markdown(msg["content"])
     
     # File upload section (collapsible)
+    uploaded_chat_file = None
     with st.expander("📎 Attach a file (optional)", expanded=False):
         uploaded_chat_file = st.file_uploader(
             "Upload document",
@@ -700,7 +653,7 @@ with tab3:
                 file_size = uploaded_chat_file.size / 1024
                 st.caption(f"{file_size:.1f} KB")
     
-    # Chat input at the bottom (fixed position)
+    # Chat input
     user_message = st.chat_input(
         "Type your message here...",
         key=f"chat_input_{st.session_state.chat_input_key}"
@@ -708,61 +661,50 @@ with tab3:
     
     # Process user input
     if user_message:
-        # Add user message
-        st.session_state.messages.append({"role": "user", "content": user_message})
-        st.session_state.chat_history.append({"role": "user", "content": user_message})
-        
-        # Display user message immediately
-        with st.chat_message("user", avatar="🧑"):
-            st.markdown(user_message)
-        
-        # Show assistant thinking
-        with st.chat_message("assistant", avatar="🤖"):
-            message_placeholder = st.empty()
-            message_placeholder.markdown("💭 Thinking...")
+        if not st.session_state.chatbot:
+            st.error("❌ Please start a new session first")
+        else:
+            st.session_state.messages.append({"role": "user", "content": user_message})
+            st.session_state.chat_history.append({"role": "user", "content": user_message})
             
-            # Prepare request
-            data = {
-                "message": user_message,
-                "session_id": st.session_state.session_id
-            }
+            with st.chat_message("user", avatar="🧑"):
+                st.markdown(user_message)
             
-            # Send message
-            result, error = make_api_request("/api/chat/message", method="POST", data=data)
-            
-            if result and result.get('success'):
-                response = result.get('response', '')
+            with st.chat_message("assistant", avatar="🤖"):
+                message_placeholder = st.empty()
+                message_placeholder.markdown("💭 Thinking...")
                 
-                # Simulate typing effect
-                full_response = ""
-                for chunk in response.split():
-                    full_response += chunk + " "
-                    message_placeholder.markdown(full_response + "▌")
-                    time.sleep(0.02)
+                try:
+                    file_path = None
+                    if uploaded_chat_file:
+                        file_path = save_uploaded_file(uploaded_chat_file)
+                    
+                    response = asyncio.run(
+                        st.session_state.chatbot.process_message(user_message, file_path)
+                    )
+                    
+                    # Display response immediately (no typing animation)
+                    message_placeholder.markdown(response)
+                    
+                    st.session_state.messages.append({"role": "assistant", "content": response})
+                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    
+                    current_blog = st.session_state.chatbot.get_current_blog()
+                    if current_blog:
+                        st.session_state.current_blog = current_blog
                 
-                message_placeholder.markdown(response)
-                
-                # Add to session state
-                st.session_state.messages.append({"role": "assistant", "content": response})
-                st.session_state.chat_history.append({"role": "assistant", "content": response})
-                
-                # Update blog context if available
-                if result.get('blog_context'):
-                    st.session_state.current_blog = result['blog_context']
-            else:
-                error_msg = f"❌ Error: {error}"
-                message_placeholder.markdown(error_msg)
-                st.session_state.messages.append({"role": "assistant", "content": error_msg})
-                
-        # Increment chat input key to reset it
-        st.session_state.chat_input_key += 1
-        st.rerun()
+                except Exception as e:
+                    error_msg = f"❌ Error: {str(e)}"
+                    message_placeholder.markdown(error_msg)
+                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+                    
+            st.session_state.chat_input_key += 1
+            st.rerun()
     
-    # Current Draft Section (if available)
-    if st.session_state.current_blog and st.session_state.current_blog.get('current_draft'):
+    # Current Draft Section
+    if st.session_state.current_blog and st.session_state.current_blog.get('current_blog'):
         st.divider()
         
-        # Sticky header for draft section
         st.markdown("""
             <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                         color: white; padding: 1rem 1.5rem; border-radius: 8px 8px 0 0; 
@@ -774,22 +716,19 @@ with tab3:
             </div>
         """, unsafe_allow_html=True)
         
-        draft = st.session_state.current_blog['current_draft']
+        draft = st.session_state.current_blog['current_blog']
         
-        # Draft preview with better visual hierarchy
         with st.container():
             st.markdown("""
                 <div style='background: #f8f9fa; padding: 1.5rem; 
                             border: 2px solid #e9ecef; border-radius: 0 0 8px 8px;'>
             """, unsafe_allow_html=True)
             
-        display_blog_post(draft)
+        display_blog_post(draft, show_quality=False)
         
         st.markdown("</div>", unsafe_allow_html=True)
-        
         st.markdown("<br>", unsafe_allow_html=True)
         
-        # Action Section with better UX
         st.markdown("""
             <div style='background: white; padding: 1.5rem; border-radius: 8px; 
                         border: 2px solid #e9ecef; margin-top: 1rem;'>
@@ -797,7 +736,6 @@ with tab3:
             </div>
         """, unsafe_allow_html=True)
         
-        # Primary actions row
         col1, col2, col3 = st.columns([2, 2, 2])
         
         with col1:
@@ -808,48 +746,36 @@ with tab3:
                 type="primary",
                 key="approve_btn"
             ):
-                with st.spinner("Finalizing your post..."):
-                    data = {
-                        "session_id": st.session_state.session_id,
-                        "approved": True,
-                        "final_notes": "Approved via Streamlit interface"
-                    }
-                    result, error = make_api_request("/api/chat/approve", method="POST", data=data)
-                    
-                    if result:
-                        st.success("✅ Draft approved!")
-                        st.balloons()
-                        
-                        # Auto-download on approval
-                        blog_text = f"""# {draft.get('title', '')}
+                st.success("✅ Draft approved!")
+                st.balloons()
+                
+                blog_dict = draft.model_dump() if hasattr(draft, 'model_dump') else draft
+                blog_text = f"""# {blog_dict.get('title', '')}
 
-{draft.get('hook', '')}
+{blog_dict.get('hook', '')}
 
-{draft.get('content', '')}
+{blog_dict.get('content', '')}
 
-**{draft.get('call_to_action', '')}**
+**{blog_dict.get('call_to_action', '')}**
 
-{' '.join(draft.get('hashtags', []))}
+{' '.join(blog_dict.get('hashtags', []))}
 
 ---
 Generated by LinkedIn Blog Assistant
 {datetime.now().strftime('%B %d, %Y at %I:%M %p')}
 """
-                        st.download_button(
-                            "📥 Download Approved Post",
-                            blog_text,
-                            file_name=f"linkedin_post_approved_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
-                            mime="text/markdown",
-                            use_container_width=True,
-                            type="primary"
-                        )
-                    else:
-                        st.error(f"Approval failed: {error}")
+                st.download_button(
+                    "📥 Download Approved Post",
+                    blog_text,
+                    file_name=f"linkedin_post_approved_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                    mime="text/markdown",
+                    use_container_width=True,
+                    type="primary"
+                )
         
         with col2:
             st.markdown("##### 📝 Request Changes")
             
-            # Feedback input with better placeholder
             feedback_text = st.text_area(
                 "What changes would you like?",
                 placeholder="e.g., Make it more casual, add statistics, shorten the hook...",
@@ -865,7 +791,6 @@ Generated by LinkedIn Blog Assistant
                 key="improve_btn"
             ):
                 if feedback_text.strip():
-                    # Add feedback message to chat
                     st.session_state.messages.append({
                         "role": "user", 
                         "content": f"Please improve the draft: {feedback_text}"
@@ -899,44 +824,40 @@ Generated by LinkedIn Blog Assistant
             
             st.markdown("<br>", unsafe_allow_html=True)
             
-            # Multiple export formats
             with st.expander("📥 More Download Options"):
-                # Text format
-                blog_text_plain = f"""{draft.get('title', '')}
+                blog_dict = draft.model_dump() if hasattr(draft, 'model_dump') else draft
+                
+                blog_text_plain = f"""{blog_dict.get('title', '')}
 
-{draft.get('hook', '')}
+{blog_dict.get('hook', '')}
 
-{draft.get('content', '')}
+{blog_dict.get('content', '')}
 
-{draft.get('call_to_action', '')}
+{blog_dict.get('call_to_action', '')}
 
-{' '.join(draft.get('hashtags', []))}
+{' '.join(blog_dict.get('hashtags', []))}
 """
                 
-                # Markdown format
-                blog_markdown = f"""# {draft.get('title', '')}
+                blog_markdown = f"""# {blog_dict.get('title', '')}
 
 ## Hook
-{draft.get('hook', '')}
+{blog_dict.get('hook', '')}
 
 ## Content
-{draft.get('content', '')}
+{blog_dict.get('content', '')}
 
 ## Call to Action
-{draft.get('call_to_action', '')}
+{blog_dict.get('call_to_action', '')}
 
 ## Hashtags
-{' '.join(draft.get('hashtags', []))}
+{' '.join(blog_dict.get('hashtags', []))}
 """
                 
-                # JSON format
-                blog_json = json.dumps(draft, indent=2)
-                
-                col_a, col_b, col_c = st.columns(3)
+                col_a, col_b = st.columns(2)
                 
                 with col_a:
                     st.download_button(
-                        "📄 TXT",
+                        "📄 Plain Text",
                         blog_text_plain,
                         file_name="linkedin_post.txt",
                         mime="text/plain",
@@ -945,19 +866,10 @@ Generated by LinkedIn Blog Assistant
                 
                 with col_b:
                     st.download_button(
-                        "📝 MD",
+                        "📝 Markdown",
                         blog_markdown,
                         file_name="linkedin_post.md",
                         mime="text/markdown",
-                        use_container_width=True
-                    )
-                
-                with col_c:
-                    st.download_button(
-                        "📋 JSON",
-                        blog_json,
-                        file_name="linkedin_post.json",
-                        mime="application/json",
                         use_container_width=True
                     )
         
@@ -987,13 +899,13 @@ Generated by LinkedIn Blog Assistant
                     st.session_state.chat_history.append({"role": "user", "content": prompt})
                     st.rerun()
         
-        # Draft analytics (optional enhancement)
+        # Simplified Draft analytics
         with st.expander("📊 Draft Analytics"):
-            col1, col2, col3, col4 = st.columns(4)
+            blog_dict = draft.model_dump() if hasattr(draft, 'model_dump') else draft
+            col1, col2, col3 = st.columns(3)
             
-            content_length = len(draft.get('content', ''))
-            word_count = len(draft.get('content', '').split())
-            hashtag_count = len(draft.get('hashtags', []))
+            content_length = len(blog_dict.get('content', ''))
+            hashtag_count = len(blog_dict.get('hashtags', []))
             
             with col1:
                 st.metric("Characters", content_length)
@@ -1005,9 +917,6 @@ Generated by LinkedIn Blog Assistant
                     st.caption("✅ Good length")
             
             with col2:
-                st.metric("Words", word_count)
-            
-            with col3:
                 st.metric("Hashtags", hashtag_count)
                 if hashtag_count < 3:
                     st.caption("⚠️ Add more")
@@ -1016,28 +925,9 @@ Generated by LinkedIn Blog Assistant
                 else:
                     st.caption("✅ Good count")
             
-            with col4:
-                engagement_score = draft.get('estimated_engagement_score', 0)
+            with col3:
+                engagement_score = blog_dict.get('estimated_engagement_score', 0)
                 st.metric("Est. Engagement", f"{engagement_score}/10")
-    
-    # Quick action suggestions
-    if len(st.session_state.messages) == 0:
-        st.markdown("#### 💡 Quick Actions")
-        
-        col1, col2, col3 = st.columns(3)
-        
-        suggestions = [
-            ("📄 Analyze Document", "I have a document I'd like to turn into a LinkedIn post"),
-            ("✍️ Write from Scratch", "Help me write a LinkedIn post about [your topic]"),
-            ("🎯 Improve Existing", "I have a draft that needs improvement")
-        ]
-        
-        for idx, (label, prompt) in enumerate(suggestions):
-            col = [col1, col2, col3][idx]
-            with col:
-                if st.button(label, use_container_width=True, key=f"quick_{idx}"):
-                    st.session_state.messages.append({"role": "user", "content": prompt})
-                    st.rerun()
 
 with tab4:
     st.markdown("## 📊 Multi-File Processing")
@@ -1068,46 +958,98 @@ with tab4:
         
         if len(uploaded_files) >= 2 and len(uploaded_files) <= 10:
             if st.button("🚀 Generate Aggregated Post", type="primary"):
-                with st.spinner("Processing files and generating comprehensive blog post..."):
-                    files = [('files', (f.name, f.getvalue())) for f in uploaded_files]
-                    data = {
-                        'aggregation_strategy': strategy,
-                        'target_audience': target_audience,
-                        'tone': tone,
-                        'max_iterations': 3
-                    }
-                    
-                    result, error = make_api_request(
-                        "/api/aggregate",
-                        method="POST",
-                        data=data,
-                        files=files
-                    )
-                    
-                    if result and result.get('success'):
-                        st.markdown('<div class="success-message">✅ Aggregated blog post generated!</div>', unsafe_allow_html=True)
-                        
-                        blog_post = result.get('blog_post')
-                        if blog_post:
-                            # Show aggregation info
-                            col1, col2, col3 = st.columns(3)
-                            with col1:
-                                st.metric("Source Files", blog_post.get('source_count', 0))
-                            with col2:
-                                st.metric("Content Types", len(blog_post.get('source_types', [])))
-                            with col3:
-                                st.metric("Quality Score", f"{blog_post.get('engagement_score', 0)}/10")
+                if not check_api_keys():
+                    display_error("API keys not configured", "Please set GROQ_API_KEY in your .env file")
+                else:
+                    try:
+                        with st.spinner("Processing files and generating comprehensive blog post..."):
+                            file_paths = [save_uploaded_file(f) for f in uploaded_files]
                             
-                            # Display blog
-                            display_blog_post(blog_post, blog_post.get('engagement_score'))
+                            multi_processor = MultiProcessor()
+                            aggregated = asyncio.run(
+                                multi_processor.process_aggregated(
+                                    file_paths=file_paths,
+                                    strategy=AggregationStrategy(strategy)
+                                )
+                            )
                             
-                            # Show insights
-                            if blog_post.get('unified_insights'):
-                                st.markdown("### 💡 Unified Insights")
-                                for insight in blog_post.get('unified_insights', []):
-                                    st.write(f"• {insight}")
-                    else:
-                        st.markdown(f'<div class="error-message">❌ {error or "Generation failed"}</div>', unsafe_allow_html=True)
+                            requirements = f"Target audience: {target_audience}. Tone: {tone}."
+                            state = convert_aggregated_to_state(aggregated, requirements, max_iterations=3)
+                            
+                            workflow = BlogWorkflow()
+                            result = workflow.run(state)
+                            
+                            if result.generation_complete and result.final_blog:
+                                st.markdown('<div class="success-message">✅ Aggregated blog post generated!</div>', unsafe_allow_html=True)
+                                
+                                blog_post = result.final_blog
+                                quality_score = result.latest_critique.quality_score if result.latest_critique else None
+                                
+                                col1, col2, col3 = st.columns(3)
+                                with col1:
+                                    st.metric("Source Files", len(uploaded_files))
+                                with col2:
+                                    st.metric("Strategy", strategy.title())
+                                with col3:
+                                    st.metric("Quality Score", f"{quality_score}/10" if quality_score else "N/A")
+                                
+                                display_blog_post(blog_post, quality_score, show_quality=True)
+                                
+                                st.markdown("### 💡 Source Insights")
+                                for idx, source in enumerate(aggregated.sources[:5], 1):
+                                    with st.expander(f"📄 {Path(source.source_file).name}"):
+                                        if source.insights and source.insights.key_insights:
+                                            for insight in source.insights.key_insights[:3]:
+                                                st.write(f"• {insight}")
+                                
+                                # Action buttons
+                                col1, col2, col3 = st.columns(3)
+                                
+                                with col1:
+                                    blog_dict = blog_post.model_dump()
+                                    blog_text = f"""# {blog_dict.get('title', '')}
+
+{blog_dict.get('hook', '')}
+
+{blog_dict.get('content', '')}
+
+**{blog_dict.get('call_to_action', '')}**
+
+{' '.join(blog_dict.get('hashtags', []))}
+
+---
+Generated from {len(uploaded_files)} sources
+Strategy: {strategy}
+{datetime.now().strftime('%B %d, %Y')}
+"""
+                                    st.download_button(
+                                        "📥 Download (MD)",
+                                        blog_text,
+                                        file_name=f"linkedin_post_aggregated_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md",
+                                        mime="text/markdown",
+                                        use_container_width=True
+                                    )
+                                
+                                with col2:
+                                    if st.button("💬 Continue in Chat", use_container_width=True, type="primary"):
+                                        st.session_state.transfer_to_chat = {
+                                            'blog': blog_post,
+                                            'quality_score': quality_score,
+                                            'source': 'multi_file'
+                                        }
+                                        st.success("✅ Transferred to chat!")
+                                        time.sleep(0.5)
+                                        st.rerun()
+                                
+                                with col3:
+                                    if st.button("🔄 Generate Another", use_container_width=True):
+                                        st.rerun()
+                            else:
+                                error_msg = result.last_error or "Generation failed"
+                                display_error(error_msg, "Try adjusting your files or strategy")
+                    
+                    except Exception as e:
+                        display_error(str(e), "Please check your files and try again")
         else:
             st.warning("⚠️ Please upload between 2 and 10 files")
 
@@ -1150,10 +1092,9 @@ with tab5:
     
     **Frontend**
     - Streamlit for interactive UI
-    - Python for backend communication
+    - Python for local processing
     
     **Backend**
-    - FastAPI for REST API
     - LangChain for document processing
     - LangGraph for workflow orchestration
     - Groq for language models
@@ -1175,22 +1116,31 @@ with tab5:
     - Review and refine generated content
     - Leverage multi-file processing for comprehensive posts
     
+    ### ⚙️ Setup Requirements
+    
+    **Required Environment Variables:**
+    ```
+    GROQ_API_KEY=your-groq-api-key
+    ```
+    
+    **Optional Environment Variables:**
+    ```
+    LANGSMITH_API_KEY=your-langsmith-key
+    LANGSMITH_PROJECT=linkedin-blog-agent
+    LANGSMITH_TRACING=true
+    GOOGLE_API_KEY=your-google-key  # For image processing
+    ```
+    
     ### 📞 Support
     
-    For issues or questions, please refer to the project documentation.
-    
-    ### 📊 API Endpoints
-    
-    - `GET /health` - API health check
-    - `POST /api/ingest` - Process file
-    - `POST /api/generate-blog` - Generate from text
-    - `POST /api/generate-blog-from-file` - Generate from file
-    - `POST /api/aggregate` - Multi-file processing
-    - `POST /api/chat/*` - Chatbot endpoints
+    For issues or questions, please refer to the project documentation or README files in each module:
+    - `ingestion/README.md`
+    - `blog_generation/README.md`
+    - `chatbot/README.md`
     
     ---
     
-    **Version:** 2.0.0  
+    **Version:** 2.0.0 (Optimized)
     **Last Updated:** 2024  
     **License:** MIT
     """)
@@ -1200,7 +1150,7 @@ st.markdown("---")
 st.markdown(
     """
     <div style='text-align: center; color: #666;'>
-        <p>Made with ❤️ using Streamlit | Powered by AI</p>
+        <p>Made with ❤️ using Streamlit | Powered by AI | Running in Local Mode</p>
     </div>
     """,
     unsafe_allow_html=True

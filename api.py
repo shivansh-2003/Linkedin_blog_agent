@@ -23,14 +23,14 @@ from langsmith_config import trace_step, verify_langsmith_setup
 
 # Import modules using relative imports (no sys.path manipulation needed)
 from ingestion.unified_processor import UnifiedProcessor
-from ingestion.multi_file_processor import MultiFileProcessor
+from ingestion.multi_processor import MultiProcessor
 
 from blog_generation.workflow import BlogGenerationWorkflow
 from blog_generation.config import BlogGenerationState, ProcessingStatus, AggregatedBlogGenerationState
 
-from chatbot.chatbot_orchastrator import ChatbotOrchestrator
+from chatbot.orchestrator import ChatbotOrchestrator
 from chatbot.config import ChatStage, MessageType, ChatMessage
-from chatbot.conversation_memory import ConversationMemoryManager
+from chatbot.memory import ConversationMemoryManager
 
 from shared.models import AggregationStrategy
 
@@ -113,7 +113,7 @@ blog_workflow = BlogGenerationWorkflow()
 # Note: ChatbotOrchestrator and ConversationMemoryManager will be created per session, not globally
 
 # Initialize multi-file processor
-multi_file_processor = MultiFileProcessor()
+multi_file_processor = MultiProcessor()
 
 # Simple session storage for single-user focus
 active_sessions: Dict[str, Dict[str, Any]] = {}

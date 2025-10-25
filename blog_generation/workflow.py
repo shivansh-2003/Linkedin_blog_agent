@@ -1,419 +1,598 @@
-from typing import Literal
+"""
+Streamlined LangGraph workflow for autonomous blog generation.
+Pure Generate → Critique → Refine loop without human review node.
+Human interaction handled separately via chatbot with conversation memory.
+"""
+
+from typing import Literal, Optional, Tuple, List, Dict, Any
+from langchain_groq import ChatGroq
 from langgraph.graph import StateGraph, END, START
 import sys
-import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from pathlib import Path
 
-from langsmith_config import trace_step, langsmith_client
-from blog_generation.config import (
-    BlogGenerationState, BlogPost, CritiqueResult, HumanFeedback,
-    ProcessingStatus, BlogQuality, BlogConfig, AggregatedBlogGenerationState,
-    AggregationStrategy, MultiSourceContent
+# Add parent directory for imports
+sys.path.append(str(Path(__file__).parent.parent))
+
+# LangSmith tracing
+from langsmith_config import trace_step
+
+# Local imports
+from .config import (
+    BlogPost,
+    CritiqueResult,
+    BlogGenerationState,
+    AggregatedBlogGenerationState,
+    ProcessingStatus,
+    BlogQuality,
+    Config
 )
-from blog_generation.blog_generator import BlogGeneratorAgent
-from blog_generation.critique_agent import CritiqueAgent
-from blog_generation.refinement_agent import RefinementAgent
+from .prompts import LinkedInPrompts
 
 
-class BlogGenerationWorkflow:
-    """LangGraph-powered circular workflow for blog generation and critique"""
+class BlogWorkflow:
+    """
+    Autonomous workflow for blog generation.
+    Completes Generate → Critique → Refine loop without human intervention.
+    Human feedback handled separately via chatbot interface.
+    """
     
     def __init__(self):
-        self.generator = BlogGeneratorAgent()
-        self.critic = CritiqueAgent()
-        self.refiner = RefinementAgent()
-        self.workflow = None
-        self._build_workflow()
+        """Initialize workflow with shared LLM client"""
+        self.prompts = LinkedInPrompts()
+        self._init_llm_clients()
+        self.graph = None
+        self._build_graph()
     
-    def _build_workflow(self):
-        """Build the LangGraph workflow with circular critique loop"""
-        workflow = StateGraph(BlogGenerationState)
-        
-        # Nodes
-        workflow.add_node("generate_content", self.generate_content_node)
-        workflow.add_node("critique_content", self.critique_content_node)
-        workflow.add_node("refine_content", self.refine_content_node)
-        workflow.add_node("human_review", self.human_review_node)
-        workflow.add_node("final_polish", self.final_polish_node)
-        workflow.add_node("error_recovery", self.error_recovery_node)
-        
-        # Edges
-        workflow.add_edge(START, "generate_content")
-        
-        workflow.add_conditional_edges(
-            "generate_content",
-            self.after_generation_routing,
-            {
-                "critique_content": "critique_content",
-                "error_recovery": "error_recovery",
-                "generate_content": "generate_content",
-            },
+    def _init_llm_clients(self):
+        """Initialize LangChain LLM clients with structured output support"""
+        base_llm = ChatGroq(
+            api_key=Config.GROQ_API_KEY,
+            model=Config.PRIMARY_MODEL,
+            max_tokens=Config.MAX_TOKENS
         )
         
-        workflow.add_conditional_edges(
-            "critique_content",
-            self.after_critique_routing,
-            {
-                "refine_content": "refine_content",
-                "human_review": "human_review",
-                "final_polish": "final_polish",
-                "error_recovery": "error_recovery",
-            },
-        )
+        # Structured output LLMs for each agent
+        self.generator_llm = base_llm.with_structured_output(
+            BlogPost,
+            method="json_mode"
+        ).with_config({"temperature": Config.GENERATION_TEMPERATURE})
         
-        workflow.add_conditional_edges(
-            "refine_content",
-            self.after_refinement_routing,
-            {
-                "critique_content": "critique_content",
-                "human_review": "human_review",
-                "final_polish": "final_polish",
-                "error_recovery": "error_recovery",
-            },
-        )
+        self.critic_llm = base_llm.with_structured_output(
+            CritiqueResult,
+            method="json_mode"
+        ).with_config({"temperature": Config.CRITIQUE_TEMPERATURE})
         
-        workflow.add_conditional_edges(
-            "human_review",
-            self.after_human_review_routing,
-            {
-                "final_polish": "final_polish",
-                "refine_content": "refine_content",
-                "generate_content": "generate_content",
-                "END": END,
-            },
-        )
-        
-        workflow.add_conditional_edges(
-            "error_recovery",
-            self.after_error_recovery_routing,
-            {
-                "generate_content": "generate_content",
-                "critique_content": "critique_content",
-                "refine_content": "refine_content",
-                "END": END,
-            },
-        )
-        
-        workflow.add_edge("final_polish", END)
-        
-        self.workflow = workflow.compile()
+        self.refiner_llm = base_llm.with_structured_output(
+            BlogPost,
+            method="json_mode"
+        ).with_config({"temperature": Config.REFINEMENT_TEMPERATURE})
     
-    # ===== NODE IMPLEMENTATIONS =====
+    # ===== AGENT IMPLEMENTATIONS =====
     
     @trace_step("blog_generation", "llm")
-    def generate_content_node(self, state) -> dict:
-        """
-        Generate blog content with detailed tracing
-        
-        This shows you:
-        - Input prompt construction
-        - Model response quality
-        - Parsing success/failure
-        - Generation time
-        - Multi-source vs single-source handling
-        """
-        print(f"\n🤖 === GENERATE CONTENT NODE (Iteration {state.iteration_count + 1}) ===")
-        
-        # Check if this is a multi-source state
-        is_multi_source = isinstance(state, AggregatedBlogGenerationState) and state.multi_source_content
-        
-        if is_multi_source:
-            print(f"📚 Multi-source generation using {state.aggregation_strategy.value} strategy")
-            print(f"   Sources: {len(state.multi_source_content.sources)}")
-            print(f"   Content types: {set(s.content_type.value for s in state.multi_source_content.sources)}")
+    def _generate_blog(self, state: BlogGenerationState) -> Tuple[Optional[BlogPost], str]:
+        """Content generation agent"""
+        print(f"🎨 Generating blog content (Iteration {state.iteration_count})...")
         
         try:
-            state.current_status = ProcessingStatus.GENERATING
-            state.iteration_count += 1
+            # Build prompt with previous feedback context
+            previous_feedback = ""
+            if state.latest_critique:
+                weaknesses = "; ".join(state.latest_critique.weaknesses[:3])
+                improvements = "; ".join(state.latest_critique.specific_improvements[:3])
+                previous_feedback = (
+                    f"Previous score: {state.latest_critique.quality_score}/10\n"
+                    f"Issues: {weaknesses}\n"
+                    f"Needed: {improvements}"
+                )
             
-            blog_post, error = self.generator.generate_blog(state)
-            if blog_post:
-                state.current_blog = blog_post
-                state.blog_history.append(blog_post)
-                return {
-                    "current_blog": blog_post,
-                    "blog_history": state.blog_history,
-                    "current_status": ProcessingStatus.GENERATING,
-                    "iteration_count": state.iteration_count,
-                    "last_error": "",
-                }
-            state.error_count += 1
-            return {
-                "error_count": state.error_count,
-                "last_error": error,
-                "current_status": ProcessingStatus.FAILED,
-            }
+            if state.human_feedback:
+                previous_feedback += f"\n\nHuman feedback (priority): {state.human_feedback}"
+            
+            user_prompt = self.prompts.build_generation_prompt(
+                source_content=state.source_content,
+                insights=state.content_insights,
+                user_requirements=state.user_requirements,
+                iteration=state.iteration_count,
+                previous_feedback=previous_feedback
+            )
+            
+            system_prompt = self.prompts.get_generator_system_prompt()
+            
+            # Call LLM with structured output
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            
+            blog_post = self.generator_llm.invoke(messages)
+            
+            # Validate and fix hashtags
+            if blog_post.hashtags:
+                blog_post.hashtags = [
+                    tag if tag.startswith('#') else f"#{tag}"
+                    for tag in blog_post.hashtags
+                ]
+            
+            print(f"✅ Generated: {blog_post.title[:50]}...")
+            return blog_post, ""
+            
         except Exception as e:
-            state.error_count += 1
-            return {
-                "error_count": state.error_count,
-                "last_error": str(e),
-                "current_status": ProcessingStatus.FAILED,
-            }
+            error_msg = f"Generation failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            return None, error_msg
     
     @trace_step("blog_critique", "llm")
-    def critique_content_node(self, state) -> dict:
-        """Critique generated content for quality and engagement"""
-        print(f"\n🔍 === CRITIQUE CONTENT NODE ===")
-        
-        # Check if this is a multi-source state
-        is_multi_source = isinstance(state, AggregatedBlogGenerationState) and state.multi_source_content
-        
-        if is_multi_source:
-            print(f"📚 Multi-source critique for {state.aggregation_strategy.value} strategy")
+    def _critique_blog(self, blog_post: BlogPost, context: str = "") -> Tuple[Optional[CritiqueResult], str]:
+        """Quality critique agent"""
+        print(f"🔍 Critiquing blog quality...")
         
         try:
-            if not state.current_blog:
-                return {
-                    "error_count": state.error_count + 1,
-                    "last_error": "No blog content to critique",
-                    "current_status": ProcessingStatus.FAILED,
-                }
-            state.current_status = ProcessingStatus.CRITIQUING
-            context = f"Iteration {state.iteration_count}, Previous score: {state.latest_critique.quality_score if state.latest_critique else 'N/A'}"
+            # Build prompt
+            user_prompt = self.prompts.build_critique_prompt(blog_post, context)
+            system_prompt = self.prompts.get_critique_system_prompt()
             
-            # Pass multi-source context if available
-            if is_multi_source:
-                context += f", Multi-source ({len(state.multi_source_content.sources)} sources, {state.aggregation_strategy.value} strategy)"
+            # Call LLM with structured output
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
             
-            critique, error = self.critic.critique_blog(state.current_blog, context)
-            if critique:
-                state.latest_critique = critique
-                state.critique_history.append(critique)
-                return {
-                    "latest_critique": critique,
-                    "critique_history": state.critique_history,
-                    "current_status": ProcessingStatus.CRITIQUING,
-                    "last_error": "",
-                }
-            state.error_count += 1
-            return {
-                "error_count": state.error_count,
-                "last_error": error,
-                "current_status": ProcessingStatus.FAILED,
-            }
+            critique = self.critic_llm.invoke(messages)
+            
+            # Calculate overall score from dimensions if not set
+            if not critique.quality_score:
+                critique.quality_score = round((
+                    critique.hook_effectiveness +
+                    critique.value_delivery +
+                    critique.linkedin_optimization +
+                    critique.engagement_potential +
+                    critique.professional_tone
+                ) / 5)
+            
+            # Determine quality level
+            if critique.quality_score >= Config.EXCELLENT_THRESHOLD:
+                critique.quality_level = BlogQuality.PUBLISH_READY
+            elif critique.quality_score >= Config.MIN_QUALITY_SCORE:
+                critique.quality_level = BlogQuality.EXCELLENT
+            elif critique.quality_score >= 5:
+                critique.quality_level = BlogQuality.GOOD
+            else:
+                critique.quality_level = BlogQuality.DRAFT
+            
+            # Auto-approve if excellent
+            critique.approved_for_publish = (critique.quality_score >= Config.MIN_QUALITY_SCORE)
+            
+            print(f"📊 Quality Score: {critique.quality_score}/10 ({critique.quality_level.value})")
+            return critique, ""
+            
         except Exception as e:
-            state.error_count += 1
-            return {
-                "error_count": state.error_count,
-                "last_error": str(e),
-                "current_status": ProcessingStatus.FAILED,
-            }
+            error_msg = f"Critique failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            return None, error_msg
     
-    def refine_content_node(self, state) -> dict:
-        """Refine content based on critique feedback"""
-        print(f"\n🔧 === REFINE CONTENT NODE ===")
-        
-        # Check if this is a multi-source state
-        is_multi_source = isinstance(state, AggregatedBlogGenerationState) and state.multi_source_content
-        
-        if is_multi_source:
-            print(f"📚 Multi-source refinement for {state.aggregation_strategy.value} strategy")
+    @trace_step("blog_refinement", "llm")
+    def _refine_blog(
+        self,
+        original_post: BlogPost,
+        critique: CritiqueResult,
+        focus_areas: List[str] = None,
+        human_feedback: str = ""
+    ) -> Tuple[Optional[BlogPost], str]:
+        """Content refinement agent"""
+        print(f"🔧 Refining blog (Target: {min(critique.quality_score + 2, 10)}/10)...")
         
         try:
-            if not state.current_blog or not state.latest_critique:
-                return {
-                    "error_count": state.error_count + 1,
-                    "last_error": "Missing blog content or critique for refinement",
-                    "current_status": ProcessingStatus.FAILED,
-                }
-            state.current_status = ProcessingStatus.REFINING
-            focus_areas = self._extract_focus_areas(state.latest_critique)
-            
-            # Add multi-source context to focus areas if available
-            if is_multi_source:
-                focus_areas.append(f"Multi-source integration ({state.aggregation_strategy.value} strategy)")
-                focus_areas.append(f"Source balance across {len(state.multi_source_content.sources)} files")
-            
-            refined_post, error = self.refiner.refine_blog(
-                original_post=state.current_blog,
-                critique=state.latest_critique,
-                focus_areas=focus_areas,
-                human_feedback=state.human_feedback,
+            # Build prompt
+            user_prompt = self.prompts.build_refinement_prompt(
+                original_post=original_post,
+                critique=critique,
+                focus_areas=focus_areas or [],
+                human_feedback=human_feedback
             )
-            if refined_post:
-                state.current_blog = refined_post
-                state.blog_history.append(refined_post)
-                return {
-                    "current_blog": refined_post,
-                    "blog_history": state.blog_history,
-                    "current_status": ProcessingStatus.REFINING,
-                    "last_error": "",
-                }
+            
+            system_prompt = self.prompts.get_refinement_system_prompt()
+            
+            # Call LLM with structured output
+            messages = [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+            
+            refined_post = self.refiner_llm.invoke(messages)
+            
+            # Validate hashtags
+            if refined_post.hashtags:
+                refined_post.hashtags = [
+                    tag if tag.startswith('#') else f"#{tag}"
+                    for tag in refined_post.hashtags
+                ]
+            
+            print(f"✅ Refined successfully")
+            return refined_post, ""
+            
+        except Exception as e:
+            error_msg = f"Refinement failed: {str(e)}"
+            print(f"❌ {error_msg}")
+            return None, error_msg
+    
+    # ===== GRAPH NODES =====
+    
+    @trace_step("generate_node", "workflow")
+    def generate_node(self, state: BlogGenerationState) -> Dict:
+        """Generate content node"""
+        print(f"\n{'='*60}")
+        print(f"🎨 GENERATE NODE (Iteration {state.iteration_count + 1})")
+        print(f"{'='*60}")
+        
+        state.current_status = ProcessingStatus.GENERATING
+        state.iteration_count += 1
+        
+        blog_post, error = self._generate_blog(state)
+        
+        if blog_post:
+            state.current_blog = blog_post
+            state.blog_history.append(blog_post)
+            state.last_error = ""
+            
+            return {
+                "current_blog": blog_post,
+                "blog_history": state.blog_history,
+                "iteration_count": state.iteration_count,
+                "current_status": ProcessingStatus.GENERATING,
+                "last_error": ""
+            }
+        else:
             state.error_count += 1
             return {
                 "error_count": state.error_count,
                 "last_error": error,
-                "current_status": ProcessingStatus.FAILED,
+                "current_status": ProcessingStatus.FAILED
             }
-        except Exception as e:
+    
+    @trace_step("critique_node", "workflow")
+    def critique_node(self, state: BlogGenerationState) -> Dict:
+        """Critique content node"""
+        print(f"\n{'='*60}")
+        print(f"🔍 CRITIQUE NODE")
+        print(f"{'='*60}")
+        
+        if not state.current_blog:
+            return {
+                "error_count": state.error_count + 1,
+                "last_error": "No blog to critique",
+                "current_status": ProcessingStatus.FAILED
+            }
+        
+        state.current_status = ProcessingStatus.CRITIQUING
+        
+        context = f"Iteration {state.iteration_count}"
+        if state.latest_critique:
+            context += f", Previous score: {state.latest_critique.quality_score}"
+        
+        critique, error = self._critique_blog(state.current_blog, context)
+        
+        if critique:
+            state.latest_critique = critique
+            state.critique_history.append(critique)
+            
+            return {
+                "latest_critique": critique,
+                "critique_history": state.critique_history,
+                "current_status": ProcessingStatus.CRITIQUING,
+                "last_error": ""
+            }
+        else:
             state.error_count += 1
             return {
                 "error_count": state.error_count,
-                "last_error": str(e),
-                "current_status": ProcessingStatus.FAILED,
+                "last_error": error,
+                "current_status": ProcessingStatus.FAILED
             }
     
-    def human_review_node(self, state: BlogGenerationState) -> dict:
-        """Human-in-the-loop review step (placeholder)"""
-        print(f"\n🧑‍⚖️ === HUMAN REVIEW NODE ===")
-        return {
-            "human_feedback": state.human_feedback,
-            "human_approved": state.human_approved,
-            "current_status": state.current_status,
-        }
+    @trace_step("refine_node", "workflow")
+    def refine_node(self, state: BlogGenerationState) -> Dict:
+        """Refine content node"""
+        print(f"\n{'='*60}")
+        print(f"🔧 REFINE NODE")
+        print(f"{'='*60}")
+        
+        if not state.current_blog or not state.latest_critique:
+            return {
+                "error_count": state.error_count + 1,
+                "last_error": "Missing blog or critique for refinement",
+                "current_status": ProcessingStatus.FAILED
+            }
+        
+        state.current_status = ProcessingStatus.REFINING
+        
+        # Extract focus areas from critique
+        focus_areas = self._extract_focus_areas(state.latest_critique)
+        
+        refined_post, error = self._refine_blog(
+            original_post=state.current_blog,
+            critique=state.latest_critique,
+            focus_areas=focus_areas,
+            human_feedback=state.human_feedback
+        )
+        
+        if refined_post:
+            state.current_blog = refined_post
+            state.blog_history.append(refined_post)
+            state.human_feedback = ""  # Clear after use
+            
+            return {
+                "current_blog": refined_post,
+                "blog_history": state.blog_history,
+                "current_status": ProcessingStatus.REFINING,
+                "human_feedback": "",
+                "last_error": ""
+            }
+        else:
+            state.error_count += 1
+            return {
+                "error_count": state.error_count,
+                "last_error": error,
+                "current_status": ProcessingStatus.FAILED
+            }
     
-    def final_polish_node(self, state: BlogGenerationState) -> dict:
-        """Finalize the blog post for publication"""
-        print(f"\n✨ === FINAL POLISH NODE ===")
+    @trace_step("final_polish_node", "workflow")
+    def final_polish_node(self, state: BlogGenerationState) -> Dict:
+        """Final polish and completion"""
+        print(f"\n{'='*60}")
+        print(f"✨ FINAL POLISH NODE")
+        print(f"{'='*60}")
+        
         if state.current_blog:
             state.final_blog = state.current_blog
             state.generation_complete = True
             state.current_status = ProcessingStatus.COMPLETED
-            return self._get_complete_state_dict(state, {
+            
+            print(f"✅ Blog generation complete!")
+            print(f"📊 Final Quality Score: {state.latest_critique.quality_score if state.latest_critique else 'N/A'}/10")
+            print(f"🔄 Total Iterations: {state.iteration_count}")
+            
+            return {
                 "final_blog": state.final_blog,
                 "generation_complete": True,
-                "current_status": ProcessingStatus.COMPLETED,
-                "last_error": "",
-            })
-        return self._get_complete_state_dict(state, {
-            "current_status": ProcessingStatus.FAILED,
-            "last_error": "No blog available to finalize",
-        })
+                "current_status": ProcessingStatus.COMPLETED
+            }
+        else:
+            return {
+                "error_count": state.error_count + 1,
+                "last_error": "No blog available for final polish",
+                "current_status": ProcessingStatus.FAILED
+            }
     
-    def error_recovery_node(self, state: BlogGenerationState) -> dict:
-        """Attempt to recover from previous error by deciding next retry target"""
-        print(f"\n🩹 === ERROR RECOVERY NODE ===")
-        state.error_count += 1
+    @trace_step("error_recovery_node", "workflow")
+    def error_recovery_node(self, state: BlogGenerationState) -> Dict:
+        """Error recovery node"""
+        print(f"\n{'='*60}")
+        print(f"⚠️  ERROR RECOVERY NODE")
+        print(f"{'='*60}")
+        
+        print(f"❌ Error: {state.last_error}")
+        print(f"🔄 Error count: {state.error_count}/{state.max_errors}")
+        
+        if state.error_count >= state.max_errors:
+            state.current_status = ProcessingStatus.FAILED
+            print(f"💔 Max errors reached. Workflow failed.")
+            
+            return {
+                "current_status": ProcessingStatus.FAILED,
+                "generation_complete": True
+            }
+        
+        # Try to recover by regenerating
+        print(f"🔄 Attempting recovery via regeneration...")
         return {
-            "error_count": state.error_count,
-            "last_error": state.last_error,
+            "current_status": ProcessingStatus.GENERATING,
+            "iteration_count": state.iteration_count  # Don't increment for recovery
         }
     
-    # ===== ROUTING FUNCTIONS =====
-    def after_generation_routing(self, state: BlogGenerationState) -> Literal["critique_content", "error_recovery", "generate_content"]:
+    # ===== ROUTING LOGIC (SIMPLIFIED) =====
+    
+    def route_after_generation(self, state: BlogGenerationState) -> Literal["critique_node", "error_recovery_node"]:
+        """Route after generation"""
         if state.current_blog:
-            return "critique_content"
-        if state.error_count >= state.max_errors:
-            return "error_recovery"
-        return "generate_content"
+            return "critique_node"
+        else:
+            return "error_recovery_node"
     
-    def after_critique_routing(self, state: BlogGenerationState) -> Literal["refine_content", "human_review", "final_polish", "error_recovery"]:
+    def route_after_critique(
+        self, 
+        state: BlogGenerationState
+    ) -> Literal["refine_node", "final_polish_node", "error_recovery_node"]:
+        """
+        Route after critique - AUTONOMOUS DECISION
+        
+        Logic:
+        1. If quality >= threshold (7) → Done, go to final polish
+        2. If iterations < max → Continue refinement
+        3. If iterations >= max → Best effort, go to final polish
+        """
+        
         if not state.latest_critique:
-            return "error_recovery" if state.error_count >= state.max_errors else "refine_content"
+            return "error_recovery_node"
+        
         score = state.latest_critique.quality_score
-        if score >= BlogConfig.MIN_QUALITY_SCORE:
-            return "final_polish"
-        if state.iteration_count >= state.max_iterations:
-            return "human_review"
-        return "refine_content"
-    
-    def after_refinement_routing(self, state: BlogGenerationState) -> Literal["critique_content", "human_review", "final_polish", "error_recovery"]:
-        if state.error_count >= state.max_errors:
-            return "error_recovery"
-        if state.iteration_count >= state.max_iterations:
-            return "final_polish"
-        return "critique_content"
-    
-    def after_human_review_routing(self, state: BlogGenerationState) -> Literal["final_polish", "refine_content", "generate_content", "END"]:
-        if state.human_approved:
-            return "final_polish"
-        fb = (state.human_feedback or "").lower()
-        if "regenerate" in fb:
-            return "generate_content"
-        if fb.strip():
-            return "refine_content"
-        return "END"
-    
-    def after_error_recovery_routing(self, state: BlogGenerationState) -> Literal["generate_content", "critique_content", "refine_content", "END"]:
-        if state.error_count >= state.max_errors:
-            return "END"
-        if state.current_status == ProcessingStatus.GENERATING:
-            return "generate_content"
-        if state.current_status == ProcessingStatus.CRITIQUING:
-            return "critique_content"
-        if state.current_status == ProcessingStatus.REFINING:
-            return "refine_content"
-        return "generate_content"
-    
-    # ===== HELPERS =====
-    def _get_complete_state_dict(self, state: BlogGenerationState, updates: dict = None) -> dict:
-        """Get complete state as dictionary with optional updates"""
-        state_dict = {
-            "source_content": state.source_content,
-            "source_file_path": state.source_file_path,
-            "content_insights": state.content_insights,
-            "user_requirements": state.user_requirements,
-            "current_blog": state.current_blog,
-            "final_blog": state.final_blog,
-            "blog_history": state.blog_history,
-            "latest_critique": state.latest_critique,
-            "critique_history": state.critique_history,
-            "human_feedback": state.human_feedback,
-            "human_approved": state.human_approved,
-            "generation_complete": state.generation_complete,
-            "current_status": state.current_status,
-            "iteration_count": state.iteration_count,
-            "error_count": state.error_count,
-            "last_error": state.last_error,
-            "max_iterations": state.max_iterations,
-            "max_errors": state.max_errors,
-        }
         
-        if updates:
-            state_dict.update(updates)
+        # High quality achieved - finish successfully
+        if score >= Config.MIN_QUALITY_SCORE:
+            print(f"✅ Quality threshold met ({score}/10 >= {Config.MIN_QUALITY_SCORE})")
+            return "final_polish_node"
         
-        return state_dict
+        # Max iterations reached - finish with best effort
+        if state.iteration_count >= state.max_iterations:
+            print(f"⏱️  Max iterations reached ({state.iteration_count}/{state.max_iterations})")
+            print(f"📝 Completing with current quality: {score}/10")
+            return "final_polish_node"
+        
+        # Continue refining
+        print(f"🔄 Quality below threshold ({score}/10 < {Config.MIN_QUALITY_SCORE}), refining...")
+        return "refine_node"
     
-    def _extract_focus_areas(self, critique: CritiqueResult) -> list[str]:
+    def route_after_refinement(
+        self, 
+        state: BlogGenerationState
+    ) -> Literal["critique_node", "error_recovery_node"]:
+        """Route after refinement - CIRCULAR LOOP BACK TO CRITIQUE"""
+        if state.current_blog:
+            print(f"♻️  Routing back to critique for evaluation")
+            return "critique_node"  # CIRCULAR LOOP
+        else:
+            return "error_recovery_node"
+    
+    def route_after_error(
+        self, 
+        state: BlogGenerationState
+    ) -> Literal["generate_node", END]:
+        """Route after error recovery"""
+        if state.error_count < state.max_errors:
+            return "generate_node"
+        else:
+            return END
+    
+    # ===== HELPER METHODS =====
+    
+    def _extract_focus_areas(self, critique: CritiqueResult) -> List[str]:
+        """Extract focus areas from critique for targeted refinement"""
         areas = []
-        for weakness in critique.weaknesses[:5]:
-            wl = weakness.lower()
-            if "hook" in wl:
-                areas.append("hook")
-            if "value" in wl or "insight" in wl:
-                areas.append("value")
-            if "engagement" in wl:
-                areas.append("engagement")
-            if "hashtag" in wl:
-                areas.append("hashtags")
-            if "cta" in wl or "call" in wl:
-                areas.append("cta")
-            if "length" in wl:
-                areas.append("length")
-        return list(dict.fromkeys(areas))
+        
+        # Check each dimension score
+        if critique.hook_effectiveness < 7:
+            areas.append("hook")
+        if critique.value_delivery < 7:
+            areas.append("value")
+        if critique.engagement_potential < 7:
+            areas.append("engagement")
+        if critique.linkedin_optimization < 7:
+            areas.append("linkedin_optimization")
+        if critique.professional_tone < 7:
+            areas.append("tone")
+        
+        # If nothing specific, focus on overall quality
+        return areas or ["overall_quality"]
     
-    # ===== PUBLIC RUNNER =====
+    # ===== GRAPH CONSTRUCTION =====
+    
+    def _build_graph(self):
+        """Build the autonomous LangGraph workflow"""
+        workflow = StateGraph(BlogGenerationState)
+        
+        # Add nodes (NO HUMAN REVIEW NODE)
+        workflow.add_node("generate_node", self.generate_node)
+        workflow.add_node("critique_node", self.critique_node)
+        workflow.add_node("refine_node", self.refine_node)
+        workflow.add_node("final_polish_node", self.final_polish_node)
+        workflow.add_node("error_recovery_node", self.error_recovery_node)
+        
+        # Set entry point
+        workflow.add_edge(START, "generate_node")
+        
+        # Add conditional edges for autonomous flow
+        workflow.add_conditional_edges(
+            "generate_node",
+            self.route_after_generation,
+            {
+                "critique_node": "critique_node",
+                "error_recovery_node": "error_recovery_node"
+            }
+        )
+        
+        workflow.add_conditional_edges(
+            "critique_node",
+            self.route_after_critique,
+            {
+                "refine_node": "refine_node",
+                "final_polish_node": "final_polish_node",
+                "error_recovery_node": "error_recovery_node"
+            }
+        )
+        
+        # CIRCULAR LOOP: Refine → Critique
+        workflow.add_conditional_edges(
+            "refine_node",
+            self.route_after_refinement,
+            {
+                "critique_node": "critique_node",  # ← CIRCULAR BACK TO CRITIQUE
+                "error_recovery_node": "error_recovery_node"
+            }
+        )
+        
+        workflow.add_conditional_edges(
+            "error_recovery_node",
+            self.route_after_error,
+            {
+                "generate_node": "generate_node",
+                END: END
+            }
+        )
+        
+        # Terminal node
+        workflow.add_edge("final_polish_node", END)
+        
+        # Compile
+        self.graph = workflow.compile()
+        
+        print("✅ Workflow compiled successfully")
+        print(f"📊 Nodes: generate → critique → refine (circular) → final_polish")
+    
+    # ===== PUBLIC API =====
+    
     @trace_step("workflow_execution", "workflow")
     def run(self, initial_state: BlogGenerationState) -> BlogGenerationState:
         """
-        Execute workflow with comprehensive tracing
+        Execute autonomous blog generation workflow.
+        Completes Generate → Critique → Refine loop without human intervention.
         
-        This will show you:
-        - The complete workflow execution path
-        - Time spent in each node
-        - State transitions between nodes
-        - Quality improvements across iterations
+        Args:
+            initial_state: Initial workflow state with source content
+            
+        Returns:
+            Final workflow state with generated blog (guaranteed)
         """
-        assert self.workflow is not None, "Workflow not compiled"
+        print(f"\n{'='*70}")
+        print(f"🚀 STARTING AUTONOMOUS BLOG GENERATION WORKFLOW")
+        print(f"{'='*70}")
+        print(f"📄 Source: {initial_state.source_content[:80]}...")
+        print(f"🎯 Max Iterations: {initial_state.max_iterations}")
+        print(f"📏 Quality Threshold: {Config.MIN_QUALITY_SCORE}/10")
+        print(f"{'='*70}\n")
         
-        # LangGraph will automatically trace the workflow execution
-        # Each node will appear as a separate trace step
-        result = self.workflow.invoke(initial_state)
+        # Execute workflow
+        final_state = self.graph.invoke(initial_state)
         
-        # Ensure we return a proper BlogGenerationState object
-        if isinstance(result, dict):
-            # Convert dict back to BlogGenerationState
-            return BlogGenerationState(**result)
-        return result
+        print(f"\n{'='*70}")
+        print(f"🏁 WORKFLOW COMPLETE")
+        print(f"{'='*70}")
+        print(f"✅ Status: {final_state.get('current_status', 'unknown')}")
+        print(f"🔄 Iterations Used: {final_state.get('iteration_count', 0)}/{initial_state.max_iterations}")
+        
+        if final_state.get('final_blog'):
+            score = final_state.get('latest_critique', {})
+            if isinstance(score, dict):
+                score = score.get('quality_score', 'N/A')
+            elif hasattr(score, 'quality_score'):
+                score = score.quality_score
+            else:
+                score = 'N/A'
+            
+            print(f"📊 Final Quality Score: {score}/10")
+            print(f"✅ Blog generated successfully")
+        else:
+            print(f"❌ Blog generation failed: {final_state.get('last_error', 'Unknown error')}")
+        
+        print(f"{'='*70}\n")
+        
+        # Convert dict back to state object
+        if isinstance(final_state, dict):
+            return BlogGenerationState(**final_state)
+        return final_state
     
     def run_workflow(self, initial_state: BlogGenerationState) -> BlogGenerationState:
-        """Alias for run() method for compatibility with main.py"""
+        """Alias for compatibility with existing code"""
         return self.run(initial_state)
-    
-    def add_human_feedback(self, state: BlogGenerationState, feedback: HumanFeedback) -> BlogGenerationState:
-        """Add human feedback to the state and prepare for refinement"""
-        state.human_feedback = feedback.feedback_text
-        state.human_approved = feedback.approve_current
-        state.current_status = ProcessingStatus.REFINING
-        return state
+
+
+__all__ = ['BlogWorkflow']
