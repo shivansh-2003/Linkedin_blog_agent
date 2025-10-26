@@ -3,9 +3,10 @@
 A comprehensive AI-powered assistant that transforms any content (files, text, images) into engaging LinkedIn blog posts through intelligent conversational interface with human-in-the-loop optimization.
 
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com/)
+[![Streamlit](https://img.shields.io/badge/Streamlit-1.28+-red.svg)](https://streamlit.io/)
 [![LangChain](https://img.shields.io/badge/LangChain-0.1+-purple.svg)](https://langchain.readthedocs.io/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-0.2+-orange.svg)](https://langchain-ai.github.io/langgraph/)
+[![Pydantic](https://img.shields.io/badge/Pydantic-2.0+-green.svg)](https://pydantic.dev/)
 
 ## 🎯 Overview
 
@@ -32,12 +33,12 @@ Transform any content into viral LinkedIn posts using:
          └───────────────────────┼───────────────────────┘
                                  │
                     ┌──────────────────┐
-                    │   FastAPI        │
-                    │   REST API       │
+                    │   Streamlit      │
+                    │   Web Interface  │
                     │                  │
-                    │ • Endpoints      │
+                    │ • Chat Interface │
                     │ • File Upload    │
-                    │ • Multi-file     │
+                    │ • Real-time UI   │
                     └──────────────────┘
 ```
 
@@ -81,7 +82,7 @@ python --version
 
 # Required API Keys
 export GROQ_API_KEY="your_groq_key"
-export GOOGLE_API_KEY="your_google_key"
+export GOOGLE_API_KEY="your_google_key"  # Optional for image analysis
 export LANGSMITH_API_KEY="your_langsmith_key"  # Optional for monitoring
 ```
 
@@ -99,23 +100,22 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Set up environment
-cp env_template.txt .env
-# Edit .env with your API keys
+# Set up environment variables
+export GROQ_API_KEY="your_groq_api_key"
+export GOOGLE_API_KEY="your_google_api_key"  # Optional
+export LANGSMITH_API_KEY="your_langsmith_key"  # Optional
 ```
 
 ### Run the Application
 
 ```bash
-# Start API server
+# Start Streamlit web interface (Recommended)
+streamlit run app2.py
+# Opens in browser at http://localhost:8501
+
+# Start API server (Legacy)
 python api.py
 # Server runs on http://localhost:8000
-
-# Interactive CLI mode
-python main.py
-
-# Test the system
-python test.py
 ```
 
 ## 📁 Project Structure
@@ -124,55 +124,54 @@ python test.py
 linkedin-blog-ai-assistant/
 ├── 📂 ingestion/              # Multi-format content processing
 │   ├── unified_processor.py   # Main orchestrator
-│   ├── pdf_processor.py      # PDF extraction
-│   ├── word_processor.py     # Word document processing
-│   ├── ppt_processor.py      # PowerPoint processing
-│   ├── code_processor.py     # Code analysis (language-agnostic)
-│   ├── image_processor.py    # Image processing
-│   ├── text_processor.py     # Text file processing
-│   ├── multi_file_processor.py # Multi-file aggregation
-│   ├── batch_processor.py    # Batch processing utilities
-│   ├── ai_analyzer.py        # AI-powered content analysis
-│   ├── prompt_templates.py   # Centralized prompt templates
-│   └── README.md             # Detailed ingestion docs
+│   ├── multi_processor.py     # Multi-file aggregation
+│   ├── format_handlers.py     # File format handlers
+│   ├── ai_analyzer.py         # AI-powered content analysis
+│   ├── config.py              # Processing configuration
+│   ├── requirements.txt       # Module dependencies
+│   └── README.md              # Detailed ingestion docs
 ├── 📂 blog_generation/        # AI blog generation workflow
-│   ├── workflow.py           # LangGraph circular workflow
-│   ├── blog_generator.py     # Content generation agent
-│   ├── critique_agent.py     # Quality assessment agent
-│   ├── refinement_agent.py   # Content improvement agent
-│   ├── prompt_templates.py   # Blog generation prompts
-│   ├── config.py             # Workflow configuration
-│   └── README.md             # Detailed workflow docs
+│   ├── workflow.py            # LangGraph circular workflow
+│   ├── prompts.py             # Blog generation prompts
+│   ├── config.py              # Workflow configuration
+│   ├── requirements.txt       # Module dependencies
+│   └── README.md              # Detailed workflow docs
 ├── 📂 chatbot/               # Conversational interface
-│   ├── chatbot_orchastrator.py  # Main conversation manager
-│   ├── conversation_memory.py   # Persistent memory system
-│   ├── intent_recognition.py    # Intent classification
-│   ├── config.py             # Chatbot configuration
-│   └── README.md             # Detailed chatbot docs
-├── 📄 api.py                 # FastAPI REST API
-├── 📄 main.py               # Interactive CLI interface
-├── 📄 app.py                # Streamlit web interface
-├── 📄 test.py               # Comprehensive test suite
-├── 📄 langsmith_config.py   # LangSmith monitoring setup
-├── 📄 requirements.txt      # Dependencies
-└── 📄 README.md            # This file
+│   ├── orchestrator.py       # Main conversation manager
+│   ├── memory.py              # Persistent memory system
+│   ├── config.py              # Chatbot configuration
+│   ├── requirements.txt       # Module dependencies
+│   └── README.md              # Detailed chatbot docs
+├── 📂 shared/                 # Shared utilities and models
+│   ├── models.py              # Common data models
+│   └── README.md              # Shared module docs
+├── 📂 chatbot_sessions/       # Session storage
+│   └── session_*.json         # Individual session files
+├── 📄 app2.py                # Streamlit web interface (main)
+├── 📄 api.py                 # FastAPI REST API (legacy)
+├── 📄 requirements.txt       # Main dependencies
+├── 📄 langsmith_config.py    # LangSmith monitoring setup
+└── 📄 README.md              # This file
 ```
 
 ## 🎮 Usage Examples
 
-### 1. Interactive CLI Mode
+### 1. Streamlit Web Interface (Recommended)
 
 ```bash
-python main.py
+# Start the main application
+streamlit run app2.py
+# Opens in browser at http://localhost:8501
 ```
 
-Choose from:
-- 📚 Research-driven content generation
-- 📄 Enhanced file processing
-- 📝 Enhanced text processing
-- 🔄 Basic mode
+**Features:**
+- 💬 **Conversational Interface**: Chat with the AI assistant
+- 📁 **File Upload**: Drag & drop files directly in chat
+- 🔄 **Real-time Refinement**: Provide feedback and see instant improvements
+- 📊 **Quality Scoring**: See detailed quality metrics
+- 💾 **Session Persistence**: Your conversations are saved automatically
 
-### 2. API Mode
+### 2. API Mode (Legacy)
 
 ```bash
 # Start server
@@ -201,58 +200,31 @@ curl -X POST "http://localhost:8000/api/aggregate" \
   -F "target_audience=Research professionals"
 ```
 
-### 3. Chatbot Conversation
-
-```bash
-# Start chat session
-curl -X POST "http://localhost:8000/api/chat/start"
-
-# Send message
-curl -X POST "http://localhost:8000/api/chat/message" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "message": "I want to create a LinkedIn post about machine learning",
-    "session_id": "your_session_id"
-  }'
-```
-
-### 4. Streamlit Web Interface
-
-```bash
-# Start Streamlit app
-streamlit run app.py
-# Opens in browser at http://localhost:8501
-```
-
 ## 🧪 Testing
 
-### Run Test Suite
+### Manual Testing
 
 ```bash
-# Full comprehensive test (24 tests)
-python test.py
+# Test Streamlit interface
+streamlit run app2.py
 
-# Test with pytest
-pytest test.py -v
+# Test API endpoints (if using legacy API)
+python api.py
 
 # Test LangSmith integration
-python test_langsmith_simple.py
-python test_langsmith_integration.py
-
-# Test specific components
-pytest test.py::TestAPIEndpoints::test_05_generate_blog_from_text -v
+python langsmith_config.py
 ```
 
 ### Test Coverage
 
-The test suite covers:
-- ✅ **API Endpoints**: All REST endpoints with real file uploads
+The system has been tested with:
 - ✅ **File Processing**: PDF, Word, PowerPoint, Code, Images, Text
-- ✅ **Blog Generation**: Text and file-based generation
+- ✅ **Blog Generation**: Text and file-based generation with quality scoring
 - ✅ **Chatbot**: Session management and conversation flow
 - ✅ **Multi-File**: Aggregation strategies and validation
 - ✅ **Error Handling**: Invalid inputs and edge cases
-- ✅ **Performance**: Concurrent requests and response times
+- ✅ **Intent Detection**: User request classification and routing
+- ✅ **Memory Persistence**: Session storage and retrieval
 
 ## 📊 Monitoring
 
@@ -408,16 +380,55 @@ The system evaluates blog posts across 5 dimensions:
 
 ## 🤝 Example Use Cases
 
-1. **Conference Presentation**: Transform your slide deck into viral LinkedIn content
-2. **Technical Tutorial**: Convert your code project into an educational post
-3. **Research Summary**: Transform a PDF research paper into digestible insights
-4. **Data Visualization**: Turn charts and graphs into compelling narratives
-5. **Product Demo**: Combine presentation slides with code examples
-6. **Learning Journey**: Share insights from conference talks or presentations
-7. **Project Showcase**: Combine code, images, and presentation materials
-8. **Multi-Source Analysis**: Synthesize insights from multiple research papers
-9. **Code Review**: Transform technical code analysis into educational content
-10. **Visual Storytelling**: Convert infographics and diagrams into engaging posts
+### 1. Conference Presentation
+**Input**: PowerPoint slides from a tech conference
+**Process**: Upload .pptx file → AI analyzes slides and visuals → Generate engaging post
+**Output**: LinkedIn post highlighting key insights with professional formatting
+
+### 2. Technical Tutorial
+**Input**: Python code file with comments
+**Process**: Upload .py file → AI analyzes code structure → Generate educational post
+**Output**: LinkedIn post explaining the code with technical insights
+
+### 3. Research Summary
+**Input**: PDF research paper
+**Process**: Upload PDF → AI extracts key findings → Generate digestible post
+**Output**: LinkedIn post summarizing research with actionable insights
+
+### 4. Data Visualization
+**Input**: Charts and graphs (PNG/JPG)
+**Process**: Upload image → AI analyzes visual content → Generate narrative post
+**Output**: LinkedIn post telling the story behind the data
+
+### 5. Multi-Source Analysis
+**Input**: Multiple files (PDF + Word + PowerPoint)
+**Process**: Upload all files → AI synthesizes insights → Generate comprehensive post
+**Output**: LinkedIn post combining insights from all sources
+
+### 6. Code Review
+**Input**: Code repository files
+**Process**: Upload multiple code files → AI analyzes patterns → Generate review post
+**Output**: LinkedIn post sharing code review insights and best practices
+
+### 7. Project Showcase
+**Input**: Presentation + code + images
+**Process**: Upload all materials → AI creates cohesive narrative → Generate showcase post
+**Output**: LinkedIn post showcasing project with technical details
+
+### 8. Learning Journey
+**Input**: Notes from conference or course
+**Process**: Upload text file → AI structures insights → Generate reflection post
+**Output**: LinkedIn post sharing learning experience and key takeaways
+
+### 9. Visual Storytelling
+**Input**: Infographics and diagrams
+**Process**: Upload images → AI describes visuals → Generate storytelling post
+**Output**: LinkedIn post explaining concepts through visual narrative
+
+### 10. Industry Analysis
+**Input**: Multiple research documents
+**Process**: Upload various sources → AI compares findings → Generate analysis post
+**Output**: LinkedIn post providing industry insights and trends
 
 ## 🐛 Troubleshooting
 

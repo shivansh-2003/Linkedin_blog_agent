@@ -80,20 +80,30 @@ class ChatbotOrchestrator:
         # Add user message to memory
         self.memory.add_user_message(user_input)
         
-        # Route based on simple intent detection
+        # Route based on intent detection with LLM fallback
         try:
             if file_path:
                 response = await self._handle_file_input(file_path, user_input)
-            elif self._is_text_content(user_input):
-                response = await self._handle_text_input(user_input)
             elif self._is_feedback(user_input):
                 response = await self._handle_feedback(user_input)
             elif self._is_approval(user_input):
                 response = await self._handle_approval()
             elif self._is_start_over(user_input):
                 response = self._handle_start_over()
+            elif self._is_text_content(user_input):
+                response = await self._handle_text_input(user_input)
             else:
-                response = self._handle_general_chat(user_input)
+                # Use LLM to classify intent when pattern matching fails
+                intent = await self._classify_intent_with_llm(user_input)
+                
+                if intent == "CONTENT_REQUEST":
+                    response = await self._handle_text_input(user_input)
+                elif intent == "FEEDBACK" and self.memory.get_blog_context():
+                    response = await self._handle_feedback(user_input)
+                elif intent == "APPROVAL":
+                    response = await self._handle_approval()
+                else:
+                    response = self._handle_general_chat(user_input)
             
             # Add response to memory
             self.memory.add_assistant_message(response)
@@ -109,32 +119,36 @@ class ChatbotOrchestrator:
     
     def _is_text_content(self, text: str) -> bool:
         """Check if user is providing content to process"""
-        # Long text (>100 chars) or starts with content indicators
-        if len(text) > 100:
+        # Lower threshold for shorter requests
+        if len(text) > 50:
             return True
         
+        # Expanded indicators to catch more variations
         indicators = [
-            "here's my content", "here is my content",
-            "please process this", "create a post about",
-            "write about", "make a post about"
+            "create", "write", "generate", "draft", "compose", "make", "build",
+            "post about", "post on", "content about", "content on",
+            "linkedin post", "blog post", "here's my content", "here is my content",
+            "please process this", "write about", "make a post about"
         ]
-        return any(phrase in text.lower() for phrase in indicators)
+        
+        text_lower = text.lower()
+        return any(phrase in text_lower for phrase in indicators)
     
     def _is_feedback(self, text: str) -> bool:
         """Check if user is providing feedback for refinement"""
-        # Only if we have a blog context
-        if not self.memory.state.blog_context:
-            return False
-        
-        # Only if currently reviewing draft
-        if self.memory.state.current_stage != ChatStage.REVIEWING_DRAFT:
+        # Only if we have a blog context (remove strict stage check)
+        if not self.memory.get_blog_context():
             return False
         
         feedback_keywords = [
             "make it", "change", "add more", "remove",
             "more technical", "more simple", "more engaging",
             "shorter", "longer", "improve", "enhance",
-            "can you", "could you"
+            "can you", "could you", "try", "instead",
+            "please provide more details", "more details",
+            "more hashtags", "add hashtags", "hashtags",
+            "please add", "please change", "please make",
+            "ok please", "can you add", "could you add"
         ]
         return any(keyword in text.lower() for keyword in feedback_keywords)
     
@@ -154,6 +168,33 @@ class ChatbotOrchestrator:
             "something else", "another post", "fresh start"
         ]
         return any(phrase in text.lower() for phrase in restart_phrases)
+    
+    async def _classify_intent_with_llm(self, user_input: str) -> str:
+        """Use LLM to classify user intent when pattern matching fails"""
+        
+        prompt = f'''Classify this user message into ONE category:
+
+User message: "{user_input}"
+
+Categories:
+- CONTENT_REQUEST: User wants to create/generate a LinkedIn post
+- FEEDBACK: User wants to modify/improve an existing draft
+- APPROVAL: User approves the current draft
+- HELP: User needs help/guidance
+- CHAT: General conversation
+
+Respond with ONLY the category name.'''
+        
+        try:
+            # Use blog workflow's LLM
+            response = await self.blog_workflow.generator_llm.ainvoke([
+                {"role": "user", "content": prompt}
+            ])
+            
+            return response.content.strip().upper()
+        except Exception as e:
+            print(f"LLM intent classification failed: {e}")
+            return "CHAT"  # Default fallback
     
     # ===== REQUEST HANDLERS =====
     
@@ -339,28 +380,25 @@ class ChatbotOrchestrator:
         """Handle general conversation"""
         
         # Check for help request
-        if any(word in user_input.lower() for word in ['help', 'how', 'what can you']):
+        if any(word in user_input.lower() for word in ['help', 'how', 'what can you', 'guide']):
             return ResponseTemplates.WELCOME
         
         # Check for greeting
-        if any(word in user_input.lower() for word in ['hi', 'hello', 'hey']):
+        if any(word in user_input.lower() for word in ['hi', 'hello', 'hey', 'greetings']):
             return ResponseTemplates.WELCOME
         
-        # Default: guide user
-        return """
-I'm here to help you create LinkedIn posts! 
+        # If we have a blog, suggest refinement
+        if self.memory.get_blog_context():
+            return "I see you have a draft in progress. Would you like to refine it or start a new post?"
+        
+        # Suggest action
+        return '''I'm not sure what you'd like me to do. Here are some ways to get started:
 
-**Here's what I can do:**
-📁 Process documents (PDF, Word, PowerPoint, code files)
-📝 Convert text into engaging posts
-✨ Refine posts based on your feedback
+1. Upload a file (PDF, Word, PowerPoint, code)
+2. Type "Create a post about [topic]"
+3. Paste content you want to turn into a LinkedIn post
 
-**To get started:**
-- Upload a file, or
-- Share the content you want to turn into a post
-
-What would you like to do?
-"""
+What would you like to do?'''
     
     # ===== FORMATTING HELPERS =====
     

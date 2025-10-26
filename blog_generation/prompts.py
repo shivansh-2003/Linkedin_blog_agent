@@ -169,7 +169,33 @@ SCORING GUIDE:
 7-8: Good, minor refinements needed
 9-10: Excellent, publish-ready
 
-Be specific, constructive, and actionable in your feedback."""
+OUTPUT REQUIREMENTS - YOU MUST RETURN VALID JSON:
+{{
+  "quality_score": 8,
+  "quality_level": "excellent",
+  "hook_effectiveness": 9,
+  "value_delivery": 8,
+  "linkedin_optimization": 8,
+  "engagement_potential": 7,
+  "professional_tone": 8,
+  "strengths": ["Strong hook", "Clear value"],
+  "weaknesses": ["CTA could be stronger"],
+  "specific_improvements": ["Add statistics", "Strengthen CTA"],
+  "tone_feedback": "Professional and engaging",
+  "engagement_feedback": "Good potential",
+  "linkedin_optimization_feedback": "Well optimized",
+  "approved_for_publish": false
+}}
+
+CRITICAL: All scores must be WHOLE NUMBERS (integers) only - no decimals like 8.2 or 8.5!
+- quality_score: integer 1-10
+- hook_effectiveness: integer 1-10  
+- value_delivery: integer 1-10
+- linkedin_optimization: integer 1-10
+- engagement_potential: integer 1-10
+- professional_tone: integer 1-10
+
+Be specific, constructive, and actionable in your feedback. Return your evaluation as valid JSON."""
     
     @staticmethod
     def build_critique_prompt(blog_post: BlogPost, context: str = "") -> str:
@@ -212,7 +238,7 @@ EVALUATION INSTRUCTIONS:
 6. Provide 3-5 specific, actionable improvements
 7. Give detailed feedback on tone, engagement, and LinkedIn optimization
 
-Be honest but constructive. Focus on actionable improvements."""
+Return your complete evaluation as valid JSON with all required fields. Be honest but constructive. Focus on actionable improvements."""
     
     # ===== REFINEMENT PROMPTS =====
     
